@@ -1,0 +1,45 @@
+{
+    "$schema": "./node_modules/@emdash-cms/plugin-cli/schemas/emdash-plugin.schema.json",
+
+    "slug": "aranx",
+    "name": "Aranx",
+    "description": "Publish the SEO articles that Aranx writes as EmDash entries, and show their live URLs in Aranx.",
+    "keywords": ["seo", "blog", "ai", "content", "aranx"],
+    // The Aranx atproto account (handle aranx.com).
+    "publisher": "did:web:pds.aranx.com",
+    "repo": "https://github.com/aranx-ai/emdash-plugin",
+
+    "license": "MIT",
+    "author": { "name": "Aranx", "url": "https://aranx.com" },
+    "security": { "email": "security@aranx.com" },
+
+    // Changing the trust contract between releases needs a major version.
+    "capabilities": [
+        "network:request",
+        "schema:read",
+        "content:write",
+        "content:publish",
+        "taxonomies:write",
+        "media:write"
+    ],
+    // The Aranx API and the image CDN. `*.aranx.com` also matches aranx.com.
+    "allowedHosts": ["*.aranx.com"],
+    "storage": {
+        "articles": { "indexes": ["entryId"] }
+    },
+
+    "admin": {
+        "pages": [{ "path": "/status", "label": "Aranx", "icon": "sparkles" }],
+        "settingsSchema": {
+            "apiKey": { "type": "secret", "label": "API key" },
+            "webhookSecret": { "type": "secret", "label": "Webhook secret" },
+            "collection": { "type": "string", "label": "Collection", "default": "posts" },
+            "taxonomy": { "type": "string", "label": "Category taxonomy", "default": "category" },
+            "apiBaseUrl": {
+                "type": "url",
+                "label": "API URL",
+                "default": "https://aranx.com/api/v1/public"
+            }
+        }
+    }
+}

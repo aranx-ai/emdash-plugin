@@ -1,0 +1,146 @@
+# Aranx plugin for EmDash
+
+This plugin imports Aranx articles into an [EmDash](https://emdashcms.com)
+site. It receives the signed Aranx webhook, fetches each article from the
+Aranx API, saves it as an EmDash entry, and reports the status and live URL
+back to Aranx.
+
+It is a sandboxed plugin (`emdash-plugin.jsonc` and `src/plugin.ts`). It
+needs EmDash 0.12 or later.
+
+## Requirements
+
+- A sandbox runner on the site. On Cloudflare Workers, this is the Workers
+  Paid plan, a `LOADER` Worker Loader binding, and `PluginBridge` exported
+  from the Worker entry point. See
+  [Plugin sandbox](https://docs.emdashcms.com/deployment/plugin-sandbox/).
+- A cron trigger that runs every minute (`* * * * *`). The EmDash Cloudflare
+  templates include it. The plugin does its work in cron tasks.
+- A collection with a title field and a Portable Text field. The default is
+  `posts`.
+
+## Install
+
+The plugin is `@aranx.com/aranx` in the
+[EmDash plugin registry](https://plugins.emdashcms.com/plugins/@aranx.com/aranx).
+The registry is on when the site has a sandbox runner:
+
+```ts title="astro.config.mjs"
+import { sandbox } from '@emdash-cms/cloudflare';
+
+emdash({
+    sandboxRunner: sandbox()
+});
+```
+
+In the EmDash admin, open **Plugins > Registry**, search for `aranx`, and
+click **Install**. Accept the capabilities.
+
+To run a local build instead, add it to `sandboxed`:
+
+```sh
+git clone https://github.com/aranx-ai/emdash-plugin.git
+cd emdash-plugin && pnpm install && pnpm build
+# In the EmDash site:
+pnpm add file:../path/to/emdash-plugin
+```
+
+```ts title="astro.config.mjs"
+import aranx from 'aranx';
+
+emdash({
+    sandboxed: [aranx],
+    sandboxRunner: sandbox()
+});
+```
+
+## Configure
+
+1. In Aranx, create an API connection for the website. Copy the API key and
+   the webhook signing secret.
+2. In EmDash, open **Plugins > Aranx > Settings**. Paste the API key and the
+   webhook secret. Change the collection or category taxonomy if the site
+   does not use `posts` and `category`.
+3. Open the **Aranx** admin page and copy the webhook URL. It is
+   `https://<your-site>/_emdash/api/plugins/<plugin id>/webhook`. A registry
+   install has the ID `r_otneixpnd6iliahd`. A local install has the ID
+   `aranx`.
+4. In Aranx, set that URL as the webhook URL of the API connection. Send a
+   test event.
+
+## How it works
+
+The webhook route checks the signature, then queues a cron task and answers
+`202`. A sandboxed call allows about 10 subrequests, so one import runs as a
+chain of one-shot tasks:
+
+| Task      | Work                                                                   |
+| --------- | ---------------------------------------------------------------------- |
+| `article` | Fetch the article, upload the featured image, create or update the entry. |
+| `terms`   | Create missing category terms and assign them. Runs only when categories change. |
+| `publish` | Publish when Aranx asks or the entry is live. Then report to Aranx.    |
+| `report`  | Report the entry state after an editor publishes, unpublishes, schedules, or deletes it. |
+| `feed`    | Read the Aranx change feed every 15 minutes and queue changed articles. |
+
+The plugin follows the Aranx integration contract:
+
+- The API is the source of truth. Entries are matched by the Aranx article ID.
+- `requested_status: "draft"` saves a draft. It never takes a live entry
+  down.
+- An article found by the feed is saved as a draft. Only a webhook with
+  `requested_status: "published"` or an editor publishes it.
+- A deleted article moves its entry to the trash. An entry that an editor
+  trashed stays in the trash.
+- The plugin pins the first `website_id` it receives and rejects others.
+
+The sandbox cannot set the `X-Aranx-Webhook-Features` header. The route
+answers the signed `GET` feature check with
+`{"features": ["requested_status"]}` instead.
+
+## Limitations
+
+- EmDash makes the slug from the title. The plugin cannot set it.
+- SEO title and description are set when the entry is created. The EmDash
+  1.4 sandbox rejects `seo` on update, so later changes do not update them.
+- The sandbox cannot rename or delete taxonomy terms. Renamed or deleted
+  Aranx categories keep their old terms.
+- EmDash headings have no IDs, so the plugin drops the Aranx table of
+  contents. Link `rel` values are not kept.
+- An event that arrives while a task of the same name runs is lost. The
+  feed finds the change within 15 minutes.
+- Articles deleted for good in Aranx without a webhook are not found. There
+  is no full scan.
+
+## Develop
+
+```sh
+pnpm install
+pnpm test        # validate the manifest, then run Vitest
+pnpm typecheck
+pnpm build
+```
+
+`tests/sync.test.ts` runs the plugin in the EmDash test runtime with a mock
+Aranx API.
+
+## Release
+
+The publisher is `did:web:pds.aranx.com` (handle `aranx.com`). GitHub
+Actions publishes releases through the
+[EmDash release service](https://docs.emdashcms.com/plugins/creating-plugins/delegated-releases/).
+No one logs in for a release.
+
+1. Raise `version` in `package.json` and merge to `main`. Published versions
+   cannot change.
+2. Tag the release and push the tag:
+
+   ```sh
+   git tag aranx@0.1.2
+   git push origin aranx@0.1.2
+   ```
+
+3. `.github/workflows/emdash-release.yml` builds the bundle, attests it, and
+   submits it. A release that adds capabilities waits for approval by the
+   publisher. Other releases publish at once.
+4. Run `pnpm exec emdash-plugin info aranx.com aranx --watch` until the
+   registry checks pass.
