@@ -70,3 +70,5 @@ jobs:
           publisher-did: ${{ steps.prepare.outputs.publisher-did }}
           bundle-file: ${{ steps.prepare.outputs.bundle-file }}
           provenance-file: ${{ steps.attest.outputs.bundle-path }}
+          # Uploads release.artifacts (icon, banner) once emdash-cms/emdash#4467 is merged.
+          plugin-directory: ${{ steps.prepare.outputs.plugin-directory }}

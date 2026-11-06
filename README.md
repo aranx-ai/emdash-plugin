@@ -165,6 +165,11 @@ file and cut a new release.
 
 Each image is a PNG, JPEG, or WebP file of at most 1 MB.
 
+The release action drops the images until EmDash PR
+[#4467](https://github.com/emdash-cms/emdash/pull/4467) is merged
+([#4464](https://github.com/emdash-cms/emdash/issues/4464)). 0.1.4 shipped
+without them. Cut a new release after the fix is merged.
+
 ### Registry status
 
 `info` shows "waiting for checks" when the registry labeler has no
