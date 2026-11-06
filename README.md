@@ -135,8 +135,8 @@ No one logs in for a release.
 2. Tag the release and push the tag:
 
    ```sh
-   git tag aranx@0.1.2
-   git push origin aranx@0.1.2
+   git tag aranx@<version>
+   git push origin aranx@<version>
    ```
 
 3. `.github/workflows/emdash-release.yml` builds the bundle, attests it, and
@@ -144,3 +144,46 @@ No one logs in for a release.
    publisher. Other releases publish at once.
 4. Run `pnpm exec emdash-plugin info aranx.com aranx --watch` until the
    registry checks pass.
+
+The run can end with `RELEASE_CONFLICT` although the release is published
+(EmDash issue [#4472](https://github.com/emdash-cms/emdash/issues/4472)).
+Check the release with `info`, not with the run status.
+
+### Listing images
+
+The icon and banner on
+[plugins.emdashcms.com](https://plugins.emdashcms.com/plugins/@aranx.com/aranx)
+come from the latest release, not from the package profile. They are set in
+`release.artifacts` in `emdash-plugin.jsonc`. To change an image, replace the
+file and cut a new release.
+
+| Slot          | File                | Size                                  |
+| ------------- | ------------------- | ------------------------------------- |
+| `icon`        | `assets/icon.png`   | 256 x 256                             |
+| `banner`      | `assets/banner.png` | 1500 x 500. The site crops it to 3:1. |
+| `screenshots` | none yet            | Up to 8, at most 1920 x 1080          |
+
+Each image is a PNG, JPEG, or WebP file of at most 1 MB.
+
+### Registry status
+
+`info` shows "waiting for checks" when the registry labeler has no
+assessment for a record. It does not mean the record is in a review queue.
+The labeler finds records through Jetstream, which reads the Bluesky relay
+`bsky.network`. If the relay does not know the PDS, the registry never sees
+a release. To check the relay:
+
+```sh
+curl "https://bsky.network/xrpc/com.atproto.sync.getHostStatus?hostname=pds.aranx.com"
+```
+
+If it returns `HostNotFound`, ask the relay to crawl the PDS, then cut a new
+release. Jetstream does not replay old records.
+
+```sh
+curl -X POST https://bsky.network/xrpc/com.atproto.sync.requestCrawl \
+  -H 'content-type: application/json' --data '{"hostname":"pds.aranx.com"}'
+```
+
+"Needs review" means that a person at EmDash must look at the listing. The
+JSON output (`info ... --json`) gives the reason codes.

@@ -28,6 +28,14 @@
         "articles": { "indexes": ["entryId"] }
     },
 
+    // Listing images go on each release record. A release without them shows none.
+    "release": {
+        "artifacts": {
+            "icon": { "file": "assets/icon.png" },
+            "banner": { "file": "assets/banner.png" }
+        }
+    },
+
     "admin": {
         "pages": [{ "path": "/status", "label": "Aranx", "icon": "sparkles" }],
         "settingsSchema": {
