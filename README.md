@@ -130,24 +130,33 @@ Actions publishes releases through the
 [EmDash release service](https://docs.emdashcms.com/plugins/creating-plugins/delegated-releases/).
 No one logs in for a release.
 
-1. Raise `version` in `package.json` and merge to `main`. Published versions
-   cannot change.
-2. Tag the release and push the tag:
+Changes go to `dev` through pull requests. `main` holds released code.
+
+1. Raise `version` in `package.json` in a pull request to `dev`. Published
+   versions cannot change.
+2. Open a pull request from `dev` to `main` and merge it.
+3. Tag the release on `main` and push the tag:
 
    ```sh
+   git switch main && git pull
    git tag aranx@<version>
    git push origin aranx@<version>
    ```
 
-3. `.github/workflows/emdash-release.yml` builds the bundle, attests it, and
+4. `.github/workflows/emdash-release.yml` builds the bundle, attests it, and
    submits it. A release that adds capabilities waits for approval by the
    publisher. Other releases publish at once.
-4. Run `pnpm exec emdash-plugin info aranx.com aranx --watch` until the
+5. Run `pnpm exec emdash-plugin info aranx.com aranx --watch` until the
    registry checks pass.
 
 The run can end with `RELEASE_CONFLICT` although the release is published
 (EmDash issue [#4472](https://github.com/emdash-cms/emdash/issues/4472)).
 Check the release with `info`, not with the run status.
+
+A release ignores changes to the name, description, keywords, license,
+authors, and security contacts in `emdash-plugin.jsonc`. To publish them,
+run `pnpm exec emdash-plugin update-package`, check the diff, then run it
+again with `--yes`. No release is needed.
 
 ### Listing images
 
@@ -165,10 +174,10 @@ file and cut a new release.
 
 Each image is a PNG, JPEG, or WebP file of at most 1 MB.
 
-The release action drops the images until EmDash PR
-[#4467](https://github.com/emdash-cms/emdash/pull/4467) is merged
-([#4464](https://github.com/emdash-cms/emdash/issues/4464)). 0.1.4 shipped
-without them. Cut a new release after the fix is merged.
+The release action needs the `plugin-directory` input to upload the images.
+Before EmDash PR [#4467](https://github.com/emdash-cms/emdash/pull/4467), it
+dropped them, so 0.1.4 shipped without images. 0.1.5 is the first release
+with them.
 
 ### Registry status
 
