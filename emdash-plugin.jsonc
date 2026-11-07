@@ -3,7 +3,7 @@
 
     "slug": "aranx",
     "name": "Aranx",
-    "description": "Publish the SEO articles that Aranx writes as EmDash entries, and show their live URLs in Aranx.",
+    "description": "Aranx writes SEO blog articles. This plugin saves each one as an EmDash post with its image and categories, and publishes it on request.",
     "keywords": ["seo", "blog", "ai", "content", "aranx"],
     // The Aranx atproto account (handle aranx.com).
     "publisher": "did:web:pds.aranx.com",
