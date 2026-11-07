@@ -1,0 +1,55 @@
+name: "Tag release"
+
+# A merge to main with a new package.json version tags aranx@<version> and
+# starts emdash-release.yml on that tag. A tag that GITHUB_TOKEN pushes starts
+# no workflow, but a workflow_dispatch does. The release service checks the
+# ref (refs/tags/aranx@*) and the workflow path, not the trigger event.
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: tag-release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: "Tag the version and start the release"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Create the tag.
+      actions: write # Start emdash-release.yml.
+    steps:
+      - name: "Check out repository"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: "Tag and start the release"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          tag="aranx@${version}"
+
+          # Exit code 2 means no matching ref. Other failures stop the job.
+          status=0
+          git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null || status=$?
+          if [ "${status}" -eq 0 ]; then
+            echo "${tag} exists. Nothing to release."
+            exit 0
+          fi
+          if [ "${status}" -ne 2 ]; then
+            echo "::error::git ls-remote failed with exit code ${status}."
+            exit "${status}"
+          fi
+
+          gh api "repos/${REPOSITORY}/git/refs" -f "ref=refs/tags/${tag}" -f "sha=${COMMIT}" >/dev/null
+          gh workflow run emdash-release.yml --repo "${REPOSITORY}" --ref "${tag}" -f "package=${tag}"
+          echo "Tagged ${tag} at ${COMMIT} and started emdash-release.yml." >> "${GITHUB_STEP_SUMMARY}"
