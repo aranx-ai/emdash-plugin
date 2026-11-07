@@ -135,23 +135,28 @@ Changes go to `dev` through pull requests. `main` holds released code.
 1. Raise `version` in `package.json` in a pull request to `dev`. Published
    versions cannot change.
 2. Open a pull request from `dev` to `main` and merge it.
-3. Tag the release on `main` and push the tag:
-
-   ```sh
-   git switch main && git pull
-   git tag aranx@<version>
-   git push origin aranx@<version>
-   ```
-
-4. `.github/workflows/emdash-release.yml` builds the bundle, attests it, and
-   submits it. A release that adds capabilities waits for approval by the
-   publisher. Other releases publish at once.
+3. `.github/workflows/tag-release.yml` runs on the merge. If no tag
+   `aranx@<version>` exists, it creates the tag and starts
+   `.github/workflows/emdash-release.yml` on it. A merge that does not
+   change `version` releases nothing.
+4. `emdash-release.yml` builds the bundle, attests it, and submits it. A
+   release that adds capabilities waits for approval by the publisher.
+   Other releases publish at once.
 5. Run `pnpm exec emdash-plugin info aranx.com aranx --watch` until the
    registry checks pass.
 
 The run can end with `RELEASE_CONFLICT` although the release is published
 (EmDash issue [#4472](https://github.com/emdash-cms/emdash/issues/4472)).
 Check the release with `info`, not with the run status.
+
+If `tag-release.yml` fails, push the tag by hand. The tag push starts
+`emdash-release.yml`:
+
+```sh
+git switch main && git pull
+git tag aranx@<version>
+git push origin aranx@<version>
+```
 
 A release ignores changes to the name, description, keywords, license,
 authors, and security contacts in `emdash-plugin.jsonc`. To publish them,
