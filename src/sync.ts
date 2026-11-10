@@ -423,6 +423,10 @@ export async function runPublishTask(
             item.draftRevisionId !== item.liveRevisionId);
     const shouldPublish =
         (task.requestedStatus === 'published' || live) && hasChanges;
+    // A request from Aranx clears an earlier refusal. A feed import keeps it.
+    let publishError: string | null | undefined = task.requestedStatus
+        ? null
+        : undefined;
     if (shouldPublish) {
         try {
             item = (
@@ -433,15 +437,18 @@ export async function runPublishTask(
         } catch (error) {
             // A site plugin refused the publish through `content:beforePublish`,
             // for example because the entry has no category. A retry gets the
-            // same answer, so report the unchanged entry and end the task.
+            // same answer, so report the unchanged entry and the reason, and
+            // end the task.
             if (errorCode(error) !== 'PUBLISH_REJECTED') throw error;
+            const reason = error instanceof Error ? error.message : String(error);
             ctx.log.warn('The site refused to publish the Aranx article', {
                 articleId: task.articleId,
-                reason: error instanceof Error ? error.message : String(error)
+                reason
             }); // 3
+            publishError = toPublishError(reason);
         }
     }
-    await reportEntry(ctx, task.articleId, item); // 4 to 9
+    await reportEntry(ctx, task.articleId, item, undefined, publishError); // 4 to 9
 }
 
 /** Reports the entry state after an editor changes it. Worst case: 6 calls. */
@@ -458,6 +465,15 @@ export async function runReportTask(
     const item =
         (await ctx.content?.get(record.collection, record.entryId)) ?? null; // 2
     await reportEntry(ctx, task.articleId, item, record);
+}
+
+const MAX_PUBLISH_ERROR_LENGTH = 1000;
+const FALLBACK_PUBLISH_ERROR = 'The site refused to publish this entry.';
+
+/** Fits a refusal reason to the Aranx `publish_error` limit of 1 to 1000 characters. */
+export function toPublishError(reason: string): string {
+    const trimmed = reason.trim().slice(0, MAX_PUBLISH_ERROR_LENGTH).trim();
+    return trimmed || FALLBACK_PUBLISH_ERROR;
 }
 
 function toIso(value: string | null | undefined): string | undefined {
@@ -501,20 +517,24 @@ export function buildReport(
             status: report.status,
             url:
                 report.url === undefined ? (previous?.url ?? null) : report.url,
-            scheduledAt
+            scheduledAt,
+            publishError: null
         }
     };
 }
 
 /**
- * Sends `PATCH /articles/{id}` when the state differs from the last report.
- * Worst case: 6 calls.
+ * Sends `PATCH /articles/{id}` when the state differs from the last report,
+ * and after every refusal. `rejection` is the refusal reason of a publish
+ * task, `null` to clear an earlier one, or `undefined` to keep it. Worst
+ * case: 6 calls.
  */
 async function reportEntry(
     ctx: PluginContext,
     articleId: string,
     item: ContentItem | null,
-    knownRecord?: ArticleRecord
+    knownRecord?: ArticleRecord,
+    rejection?: string | null
 ): Promise<void> {
     const store = articles(ctx);
     const config = await readConfig(ctx); // 1
@@ -530,11 +550,33 @@ async function reportEntry(
         record?.reported ?? null
     );
     const previous = record?.reported;
+    const previousError = previous?.publishError ?? null;
+    // Aranx clears the error itself on a `published` or `scheduled` report.
+    const clearedByStatus =
+        report.status === 'published' || report.status === 'scheduled';
+    state.publishError =
+        typeof rejection === 'string'
+            ? rejection
+            : rejection === null || clearedByStatus
+              ? null
+              : previousError;
+    // A refusal is always sent with its reason. Aranx may have cleared the
+    // error since the last report, so the stored reason proves nothing.
+    const refused = typeof rejection === 'string';
     if (
+        refused ||
+        (state.publishError !== previousError &&
+            (state.publishError !== null || !clearedByStatus))
+    ) {
+        report.publish_error = state.publishError;
+    }
+    if (
+        !refused &&
         previous &&
         previous.status === state.status &&
         previous.url === state.url &&
-        previous.scheduledAt === state.scheduledAt
+        previous.scheduledAt === state.scheduledAt &&
+        previousError === state.publishError
     ) {
         return;
     }

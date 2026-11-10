@@ -263,6 +263,8 @@ export interface ArticleReport {
     url?: string | null;
     published_at?: string;
     scheduled_at?: string;
+    /** A refusal reason sets the Aranx publish error. `null` clears it. */
+    publish_error?: string | null;
 }
 
 /** Reports the state of the article on this site. A 404 means it is in the Aranx trash. */
