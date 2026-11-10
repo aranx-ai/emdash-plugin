@@ -93,7 +93,8 @@ The plugin follows the Aranx integration contract:
   trashed stays in the trash.
 - When a site plugin refuses a publish (`PUBLISH_REJECTED` from a
   `content:beforePublish` hook), the entry stays a draft. The plugin logs
-  the reason, reports `draft` to Aranx, and does not retry.
+  the reason, sends it to Aranx as `publish_error`, and does not retry. The
+  next publish request from Aranx clears the error.
 - The plugin pins the first `website_id` it receives and rejects others.
 
 The sandbox cannot set the `X-Aranx-Webhook-Features` header. The route
@@ -113,6 +114,8 @@ answers the signed `GET` feature check with
   feed finds the change within 15 minutes.
 - Articles deleted for good in Aranx without a webhook are not found. There
   is no full scan.
+- A site with a publish policy, for example a required category, can refuse
+  the publish. A new entry stays a draft, and Aranx shows the reason.
 
 ## Develop
 
