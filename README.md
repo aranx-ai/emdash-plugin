@@ -91,6 +91,9 @@ The plugin follows the Aranx integration contract:
   `requested_status: "published"` or an editor publishes it.
 - A deleted article moves its entry to the trash. An entry that an editor
   trashed stays in the trash.
+- When a site plugin refuses a publish (`PUBLISH_REJECTED` from a
+  `content:beforePublish` hook), the entry stays a draft. The plugin logs
+  the reason, reports `draft` to Aranx, and does not retry.
 - The plugin pins the first `website_id` it receives and rejects others.
 
 The sandbox cannot set the `X-Aranx-Webhook-Features` header. The route

@@ -397,7 +397,7 @@ export async function runTermsTask(
 /**
  * Step 3. Publishes when Aranx asks, or when the entry is live and has new
  * changes. A `draft` request never takes a live entry down. Then reports the
- * state. Worst case: 8 calls.
+ * state. Worst case: 9 calls.
  */
 export async function runPublishTask(
     ctx: PluginContext,
@@ -424,13 +424,24 @@ export async function runPublishTask(
     const shouldPublish =
         (task.requestedStatus === 'published' || live) && hasChanges;
     if (shouldPublish) {
-        item = (
-            await publisher.publish(task.collection, task.entryId, {
-                _rev: versioned._rev
-            })
-        ).item; // 2
+        try {
+            item = (
+                await publisher.publish(task.collection, task.entryId, {
+                    _rev: versioned._rev
+                })
+            ).item; // 2
+        } catch (error) {
+            // A site plugin refused the publish through `content:beforePublish`,
+            // for example because the entry has no category. A retry gets the
+            // same answer, so report the unchanged entry and end the task.
+            if (errorCode(error) !== 'PUBLISH_REJECTED') throw error;
+            ctx.log.warn('The site refused to publish the Aranx article', {
+                articleId: task.articleId,
+                reason: error instanceof Error ? error.message : String(error)
+            }); // 3
+        }
     }
-    await reportEntry(ctx, task.articleId, item); // 3 to 8
+    await reportEntry(ctx, task.articleId, item); // 4 to 9
 }
 
 /** Reports the entry state after an editor changes it. Worst case: 6 calls. */
