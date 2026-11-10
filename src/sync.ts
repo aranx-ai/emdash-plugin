@@ -524,9 +524,10 @@ export function buildReport(
 }
 
 /**
- * Sends `PATCH /articles/{id}` when the state differs from the last report.
- * `rejection` is the refusal reason of a publish task, `null` to clear an
- * earlier one, or `undefined` to keep it. Worst case: 6 calls.
+ * Sends `PATCH /articles/{id}` when the state differs from the last report,
+ * and after every refusal. `rejection` is the refusal reason of a publish
+ * task, `null` to clear an earlier one, or `undefined` to keep it. Worst
+ * case: 6 calls.
  */
 async function reportEntry(
     ctx: PluginContext,
@@ -559,13 +560,18 @@ async function reportEntry(
             : rejection === null || clearedByStatus
               ? null
               : previousError;
+    // A refusal is always sent with its reason. Aranx may have cleared the
+    // error since the last report, so the stored reason proves nothing.
+    const refused = typeof rejection === 'string';
     if (
-        state.publishError !== previousError &&
-        (state.publishError !== null || !clearedByStatus)
+        refused ||
+        (state.publishError !== previousError &&
+            (state.publishError !== null || !clearedByStatus))
     ) {
         report.publish_error = state.publishError;
     }
     if (
+        !refused &&
         previous &&
         previous.status === state.status &&
         previous.url === state.url &&

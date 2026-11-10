@@ -146,8 +146,8 @@ describe('publish task', () => {
         expect(bodies()).toEqual([{ status: 'draft', publish_error: REASON }]);
     });
 
-    it('sends the same reason only once', async () => {
-        const { ctx, fetch } = fakeContext(
+    it('sends the reason after every refusal, because Aranx may have cleared it', async () => {
+        const { ctx, bodies } = fakeContext(
             rejected(),
             storedRecord({ status: 'draft' })
         );
@@ -155,7 +155,43 @@ describe('publish task', () => {
         await runPublishTask(ctx, task);
         await runPublishTask(ctx, task);
 
-        expect(fetch).toHaveBeenCalledTimes(1);
+        expect(bodies()).toEqual([
+            { status: 'draft', publish_error: REASON },
+            { status: 'draft', publish_error: REASON }
+        ]);
+    });
+
+    it('sends the reason with a live entry whose URL changed', async () => {
+        const { ctx, bodies } = fakeContext(
+            rejected(),
+            storedRecord({
+                status: 'published',
+                url: 'https://old.example/posts/entry-1',
+                publishError: REASON
+            })
+        );
+        (
+            ctx.content as unknown as { getVersioned: () => Promise<unknown> }
+        ).getVersioned = async () => ({
+            item: {
+                id: 'entry-1',
+                status: 'published',
+                publishedAt: '2026-11-05T10:00:00.000Z',
+                liveRevisionId: 'rev-live',
+                draftRevisionId: 'rev-draft'
+            },
+            _rev: 'rev-1'
+        });
+
+        await runPublishTask(ctx, task);
+
+        expect(bodies()).toEqual([
+            {
+                status: 'published',
+                url: 'https://site.example/posts/entry-1',
+                publish_error: REASON
+            }
+        ]);
     });
 
     it('sends a changed reason even when the status is the same', async () => {
