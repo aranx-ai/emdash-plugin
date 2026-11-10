@@ -10,6 +10,8 @@ export interface ReportedState {
     status: string;
     url: string | null;
     scheduledAt: string | null;
+    /** The `publish_error` that Aranx holds. Older records lack it. */
+    publishError: string | null;
 }
 
 export interface ArticleRecord {
@@ -45,7 +47,8 @@ function toReported(value: unknown): ReportedState | null {
     return {
         status: value.status,
         url: stringOrNull(value.url),
-        scheduledAt: stringOrNull(value.scheduledAt)
+        scheduledAt: stringOrNull(value.scheduledAt),
+        publishError: stringOrNull(value.publishError)
     };
 }
 

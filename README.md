@@ -91,6 +91,10 @@ The plugin follows the Aranx integration contract:
   `requested_status: "published"` or an editor publishes it.
 - A deleted article moves its entry to the trash. An entry that an editor
   trashed stays in the trash.
+- When a site plugin refuses a publish (`PUBLISH_REJECTED` from a
+  `content:beforePublish` hook), the entry stays a draft. The plugin logs
+  the reason, sends it to Aranx as `publish_error`, and does not retry. The
+  next publish request from Aranx clears the error.
 - The plugin pins the first `website_id` it receives and rejects others.
 
 The sandbox cannot set the `X-Aranx-Webhook-Features` header. The route
@@ -110,6 +114,8 @@ answers the signed `GET` feature check with
   feed finds the change within 15 minutes.
 - Articles deleted for good in Aranx without a webhook are not found. There
   is no full scan.
+- A site with a publish policy, for example a required category, can refuse
+  the publish. A new entry stays a draft, and Aranx shows the reason.
 
 ## Develop
 
@@ -130,24 +136,38 @@ Actions publishes releases through the
 [EmDash release service](https://docs.emdashcms.com/plugins/creating-plugins/delegated-releases/).
 No one logs in for a release.
 
-1. Raise `version` in `package.json` and merge to `main`. Published versions
-   cannot change.
-2. Tag the release and push the tag:
+Changes go to `dev` through pull requests. `main` holds released code.
 
-   ```sh
-   git tag aranx@<version>
-   git push origin aranx@<version>
-   ```
-
-3. `.github/workflows/emdash-release.yml` builds the bundle, attests it, and
-   submits it. A release that adds capabilities waits for approval by the
-   publisher. Other releases publish at once.
-4. Run `pnpm exec emdash-plugin info aranx.com aranx --watch` until the
+1. Raise `version` in `package.json` in a pull request to `dev`. Published
+   versions cannot change.
+2. Open a pull request from `dev` to `main` and merge it.
+3. `.github/workflows/tag-release.yml` runs on the merge. If no tag
+   `aranx@<version>` exists, it creates the tag and starts
+   `.github/workflows/emdash-release.yml` on it. A merge that does not
+   change `version` releases nothing.
+4. `emdash-release.yml` builds the bundle, attests it, and submits it. A
+   release that adds capabilities waits for approval by the publisher.
+   Other releases publish at once.
+5. Run `pnpm exec emdash-plugin info aranx.com aranx --watch` until the
    registry checks pass.
 
 The run can end with `RELEASE_CONFLICT` although the release is published
 (EmDash issue [#4472](https://github.com/emdash-cms/emdash/issues/4472)).
 Check the release with `info`, not with the run status.
+
+If `tag-release.yml` fails, push the tag by hand. The tag push starts
+`emdash-release.yml`:
+
+```sh
+git switch main && git pull
+git tag aranx@<version>
+git push origin aranx@<version>
+```
+
+A release ignores changes to the name, description, keywords, license,
+authors, and security contacts in `emdash-plugin.jsonc`. To publish them,
+run `pnpm exec emdash-plugin update-package`, check the diff, then run it
+again with `--yes`. No release is needed.
 
 ### Listing images
 
@@ -165,10 +185,10 @@ file and cut a new release.
 
 Each image is a PNG, JPEG, or WebP file of at most 1 MB.
 
-The release action drops the images until EmDash PR
-[#4467](https://github.com/emdash-cms/emdash/pull/4467) is merged
-([#4464](https://github.com/emdash-cms/emdash/issues/4464)). 0.1.4 shipped
-without them. Cut a new release after the fix is merged.
+The release action needs the `plugin-directory` input to upload the images.
+Before EmDash PR [#4467](https://github.com/emdash-cms/emdash/pull/4467), it
+dropped them, so 0.1.4 shipped without images. 0.1.5 is the first release
+with them.
 
 ### Registry status
 
