@@ -5,7 +5,7 @@ import {
 } from '@emdash-cms/plugin-test';
 import { sign } from '../src/signature';
 
-const API = 'https://aranx.com/api/v1/public';
+const API = 'https://api.aranx.com/api/v1/public';
 const SECRET = 'arx_whsec_test';
 const API_KEY = 'arx_sk_test';
 const WEBSITE_ID = 'website-1';
