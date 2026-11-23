@@ -353,6 +353,158 @@ describe('article import', () => {
         expect(patches(current)).toHaveLength(1);
     });
 
+    it('leaves the entry alone when only the Aranx update time changes', async () => {
+        const current = await setup();
+        await deliver(current, {
+            event: 'article.published',
+            article_id: ARTICLE_ID,
+            requested_status: 'published'
+        });
+        await queueArticle(current);
+        await queueFeatured(current);
+        await queuePatch(current);
+        await drain(current);
+        const [before] = await current.inspect.content.list('posts');
+
+        // The status report above changed `updated_at` in Aranx.
+        await deliver(current, {
+            event: 'article.updated',
+            article_id: ARTICLE_ID
+        });
+        await queueArticle(
+            current,
+            article({
+                status: 'published',
+                updated_at: '2026-11-02T10:00:00.000Z'
+            })
+        );
+        await drain(current);
+
+        const after = await current.inspect.content.get('posts', before.id);
+        expect(after?.updatedAt).toBe(before.updatedAt);
+        expect(after?.draftRevisionId ?? null).toBe(
+            before.draftRevisionId ?? null
+        );
+        expect(
+            await current.inspect.storage.get('articles', ARTICLE_ID)
+        ).toMatchObject({ aranxUpdatedAt: '2026-11-02T10:00:00.000Z' });
+        expect(patches(current)).toHaveLength(1);
+    });
+
+    it('updates categories without publishing an editor draft', async () => {
+        const current = await setup();
+        await deliver(current, {
+            event: 'article.published',
+            article_id: ARTICLE_ID,
+            requested_status: 'published'
+        });
+        await queueArticle(current);
+        await queueFeatured(current);
+        await queuePatch(current);
+        await drain(current);
+        const [entry] = await current.inspect.content.list('posts');
+        await current.actions.content.update('posts', entry.id, {
+            data: { title: 'Edited in EmDash' }
+        });
+        const edited = await current.inspect.content.get('posts', entry.id);
+        expect(edited?.draftRevisionId).toBeTruthy();
+
+        await deliver(current, {
+            event: 'article.updated',
+            article_id: ARTICLE_ID
+        });
+        await queueArticle(
+            current,
+            article({
+                status: 'published',
+                categories: [{ id: '8', name: 'Tips', slug: 'tips' }],
+                updated_at: '2026-11-02T10:00:00.000Z'
+            })
+        );
+        await drain(current);
+
+        const after = await current.inspect.content.get('posts', entry.id);
+        expect(after?.draftRevisionId).toBe(edited?.draftRevisionId);
+        expect(after?.liveRevisionId).toBe(edited?.liveRevisionId);
+        const terms = await current.inspect.content.terms(
+            'posts',
+            entry.id,
+            'category'
+        );
+        expect(terms.map((term) => term.slug)).toEqual(['tips']);
+        expect(
+            await current.inspect.storage.get('articles', ARTICLE_ID)
+        ).toMatchObject({ categoryIds: ['8'] });
+    });
+
+    it('keeps an adopted entry until the article changes in Aranx', async () => {
+        const current = await setup();
+        const entry = await current.fixtures.content('posts', {
+            slug: 'demarrer-un-blog',
+            status: 'published',
+            data: { title: 'Démarrer un blog' }
+        });
+        await current.fixtures.plugin.storage('articles', ARTICLE_ID, {
+            entryId: entry.id,
+            collection: 'posts',
+            aranxUpdatedAt: '1970-01-01T00:00:00.000Z',
+            categoryIds: [],
+            featuredUrl: null,
+            featuredImage: null,
+            reported: {
+                status: 'published',
+                url: 'https://blog.example.com/posts/demarrer-un-blog',
+                scheduledAt: null,
+                publishError: null
+            },
+            adopted: true
+        });
+
+        await deliver(current, {
+            event: 'article.updated',
+            article_id: ARTICLE_ID
+        });
+        await queueArticle(current, article({ status: 'published' }));
+        await drain(current);
+
+        const kept = await current.inspect.content.get('posts', entry.id);
+        expect(kept?.data.title).toBe('Démarrer un blog');
+        expect(kept?.updatedAt).toBe(entry.updatedAt);
+        expect(
+            await current.inspect.storage.get('articles', ARTICLE_ID)
+        ).toMatchObject({
+            adopted: false,
+            categoryIds: ['7'],
+            featuredUrl: FEATURED,
+            contentHash: expect.stringMatching(/^[0-9a-f]{64}$/)
+        });
+        expect(
+            current.http.requests().filter((request) => request.url === FEATURED)
+        ).toHaveLength(0);
+        expect(patches(current)).toHaveLength(0);
+
+        await deliver(current, {
+            event: 'article.updated',
+            article_id: ARTICLE_ID
+        });
+        await queueArticle(
+            current,
+            article({
+                title: 'How to start a blog in 2027',
+                status: 'published',
+                updated_at: '2026-11-02T10:00:00.000Z'
+            })
+        );
+        await drain(current);
+
+        const entries = await current.inspect.content.list('posts');
+        expect(entries).toHaveLength(1);
+        expect(entries[0]).toMatchObject({
+            status: 'published',
+            data: { title: 'How to start a blog in 2027' }
+        });
+    });
+
     it('moves the entry to the trash when the article is deleted', async () => {
         const current = await setup();
         await deliver(current, {
@@ -445,6 +597,48 @@ describe('change feed', () => {
         ]);
         expect(await current.inspect.kv.get('feed')).toMatchObject({
             cursor: 'cursor-1'
+        });
+    });
+
+    it('skips new articles created before the conversion', async () => {
+        const current = await setup();
+        await current.fixtures.plugin.kv('feed', {
+            cursor: null,
+            lastRunAt: null,
+            importAfter: '2026-11-05T00:00:00.000Z'
+        });
+        const params = new URLSearchParams({
+            include_deleted: 'true',
+            limit: '3',
+            updated_after: '1970-01-01T00:00:00Z'
+        });
+        await current.http.respond(
+            `${API}/articles?${params}`,
+            Response.json({
+                articles: [
+                    { ...article(), deleted: false, featured_image: null }
+                ],
+                pagination: { has_more: false, next_cursor: 'cursor-1' }
+            })
+        );
+
+        await current.transport.invokeHook('cron', {
+            name: 'feed',
+            scheduledAt: new Date().toISOString()
+        });
+        await drain(current);
+
+        expect(await current.inspect.content.list('posts')).toHaveLength(0);
+        expect(
+            current.http
+                .requests()
+                .filter((request) =>
+                    request.url.startsWith(`${API}/articles/${ARTICLE_ID}`)
+                )
+        ).toHaveLength(0);
+        expect(await current.inspect.kv.get('feed')).toMatchObject({
+            cursor: 'cursor-1',
+            importAfter: '2026-11-05T00:00:00.000Z'
         });
     });
 });
