@@ -3,7 +3,7 @@ import type { PluginContext } from 'emdash/plugin';
 import { runPublishTask } from '../src/sync';
 import type { ArticleRecord, ReportedState } from '../src/store';
 
-const API = 'https://aranx.com/api/v1/public';
+const API = 'https://api.aranx.com/api/v1/public';
 const ARTICLE_ID = 'article-1';
 const REASON = 'Assign a category before publishing.';
 
