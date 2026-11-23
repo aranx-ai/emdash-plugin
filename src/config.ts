@@ -14,7 +14,7 @@ export interface PluginConfig {
 }
 
 // The URL that versions before 0.1.8 pre-filled and EmDash saved with the
-// other settings. aranx.com/api is retired, so a saved copy means the default.
+// other settings. A saved copy means the default, so it maps to the API host.
 const LEGACY_API_BASE_URL = 'https://aranx.com/api/v1/public';
 
 function setting(entries: Map<string, unknown>, key: string): string | null {
