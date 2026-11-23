@@ -7,6 +7,7 @@ import {
     type AranxArticle,
     type AranxCategory,
     type AranxImage,
+    type FeedItem,
     type ArticleReport,
     type ArticleStatus
 } from './aranx-api';
@@ -171,6 +172,27 @@ async function featuredImageValue(
     }
 }
 
+/**
+ * SHA-256 of the article fields that the entry write uses. Aranx also
+ * changes `updated_at` for fields the entry does not hold, such as the
+ * status this plugin reports.
+ */
+export async function hashArticle(article: AranxArticle): Promise<string> {
+    const fields = JSON.stringify([
+        article.title,
+        article.metaDescription,
+        article.content,
+        article.images
+    ]);
+    const digest = await crypto.subtle.digest(
+        'SHA-256',
+        new TextEncoder().encode(fields)
+    );
+    return Array.from(new Uint8Array(digest), (byte) =>
+        byte.toString(16).padStart(2, '0')
+    ).join('');
+}
+
 function sameIds(a: string[], b: string[]): boolean {
     return a.length === b.length && a.every((id, index) => id === b[index]);
 }
@@ -221,6 +243,50 @@ export async function runArticleTask(
         return;
     }
 
+    const featured = featuredImageOf(article);
+    const contentHash = await hashArticle(article);
+    if (
+        record &&
+        (record.contentHash === contentHash ||
+            (record.adopted && !record.contentHash))
+    ) {
+        // Only fields that the entry does not hold changed, for example the
+        // status that this plugin reported. An adopted entry keeps its own
+        // content until the article changes in Aranx.
+        // Queue first: a failed save repeats the import, and a saved record
+        // without its task would skip it.
+        if (!record.adopted && !sameIds(categoryIds, record.categoryIds)) {
+            await scheduleTask(ctx, {
+                kind: 'terms',
+                articleId,
+                entryId: record.entryId,
+                collection: record.collection,
+                categories: article.categories,
+                requestedStatus,
+                termsOnly: true
+            }); // 4
+        } else if (requestedStatus) {
+            await scheduleTask(ctx, {
+                kind: 'publish',
+                articleId,
+                entryId: record.entryId,
+                collection: record.collection,
+                requestedStatus
+            }); // 4
+        }
+        await store.put(articleId, {
+            ...record,
+            aranxUpdatedAt: article.updatedAt,
+            contentHash,
+            categoryIds,
+            ...(record.adopted && {
+                featuredUrl: featured?.url ?? null,
+                adopted: false
+            })
+        }); // 5
+        return;
+    }
+
     const collection = record?.collection ?? config.collection;
     if (!ctx.schema)
         throw new Error('The schema:read capability is not granted');
@@ -228,7 +294,6 @@ export async function runArticleTask(
     if (!schema) throw new Error(`Collection "${collection}" does not exist`);
     const fields = mapFields(schema);
 
-    const featured = featuredImageOf(article);
     let featuredImage = record?.featuredImage ?? null;
     if (fields.image && featured && featured.url !== record?.featuredUrl) {
         featuredImage = await featuredImageValue(ctx, featured); // 5, 6
@@ -275,7 +340,9 @@ export async function runArticleTask(
         categoryIds,
         featuredUrl: featured?.url ?? null,
         featuredImage: featured ? featuredImage : null,
-        reported: record?.reported ?? null
+        reported: record?.reported ?? null,
+        contentHash,
+        adopted: false
     }); // 8
 
     const categoriesChanged = !sameIds(categoryIds, record?.categoryIds ?? []);
@@ -385,6 +452,7 @@ export async function runTermsTask(
             error: error instanceof Error ? error.message : String(error)
         });
     }
+    if (task.termsOnly && !task.requestedStatus) return;
     await scheduleTask(ctx, {
         kind: 'publish',
         articleId: task.articleId,
@@ -600,6 +668,12 @@ export interface FeedResult {
  * changed, or trashed article. Stores the cursor after the page, so a crash
  * repeats a page and never skips one. Worst case: 9 calls.
  */
+/** A new article from before the conversion. It was never on the site. */
+function createdBefore(item: FeedItem, importAfter: string | null): boolean {
+    if (!importAfter || !item.createdAt) return false;
+    return Date.parse(item.createdAt) < Date.parse(importAfter);
+}
+
 export async function runFeedTask(ctx: PluginContext): Promise<FeedResult> {
     const config = await readConfig(ctx); // 1
     if (!config.apiKey) return { scheduled: 0, hasMore: false };
@@ -619,8 +693,9 @@ export async function runFeedTask(ctx: PluginContext): Promise<FeedResult> {
         const record = stored.get(item.id);
         const needsImport = item.deleted
             ? Boolean(record)
-            : !record ||
-              Date.parse(record.aranxUpdatedAt) < Date.parse(item.updatedAt);
+            : record
+              ? Date.parse(record.aranxUpdatedAt) < Date.parse(item.updatedAt)
+              : !createdBefore(item, state.importAfter);
         if (!needsImport) continue;
         // The feed never publishes: no requested status.
         await scheduleTask(ctx, {
@@ -632,6 +707,7 @@ export async function runFeedTask(ctx: PluginContext): Promise<FeedResult> {
     }
 
     await writeFeedState(ctx, {
+        ...state,
         cursor: page.nextCursor ?? state.cursor,
         lastRunAt: new Date().toISOString()
     }); // 8

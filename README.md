@@ -96,10 +96,35 @@ The plugin follows the Aranx integration contract:
   the reason, sends it to Aranx as `publish_error`, and does not retry. The
   next publish request from Aranx clears the error.
 - The plugin pins the first `website_id` it receives and rejects others.
+- The plugin writes an entry only when the Aranx title, body, excerpt, or
+  images changed. It keeps a SHA-256 of these fields per article. Aranx
+  also changes `updated_at` when the plugin reports a status, and that
+  change alone does not touch the entry.
 
 The sandbox cannot set the `X-Aranx-Webhook-Features` header. The route
 answers the signed `GET` feature check with
 `{"features": ["requested_status"]}` instead.
+
+## Converting a site that already has the posts
+
+A site that moves to EmDash from another CMS, for example WordPress, already
+has the posts that Aranx published. A conversion script links them, so the
+plugin does not create copies:
+
+- One `articles` storage row per Aranx article ID, with the entry ID, the
+  collection, `aranxUpdatedAt: "1970-01-01T00:00:00.000Z"`, and
+  `adopted: true`. The first import of an adopted article records its content
+  hash and categories and leaves the entry as it is. Later changes in Aranx
+  update the entry as usual. An Aranx edit before the first import becomes
+  the baseline and does not reach the entry, so edit no article until every
+  linked row has a `contentHash`.
+- `importAfter` (an ISO time) in the `feed` KV value. The feed does not
+  import an unlinked article created before that time, because it was never
+  on the site. A webhook still imports it.
+
+The script runs before the API key is saved in the plugin settings. The
+Aranx repository has one for the Clem Around The Corner move:
+`apps/webapp/scripts/emdash-conversion.ts`.
 
 ## Limitations
 

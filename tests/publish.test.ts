@@ -20,6 +20,8 @@ function storedRecord(reported: Partial<ReportedState> | null): ArticleRecord {
         categoryIds: [],
         featuredUrl: null,
         featuredImage: null,
+        contentHash: null,
+        adopted: false,
         reported: reported
             ? {
                   status: 'draft',

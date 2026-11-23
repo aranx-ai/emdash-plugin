@@ -38,6 +38,11 @@ export type Task =
           collection: string;
           categories: AranxCategory[];
           requestedStatus: RequestedStatus | null;
+          /**
+           * The entry content did not change. Without a request from Aranx,
+           * the task does not publish, so an editor's pending draft stays.
+           */
+          termsOnly?: boolean;
       }
     | {
           kind: 'publish';
@@ -139,7 +144,8 @@ export function parseTask(event: CronEvent): Task | null {
                       entryId,
                       collection,
                       categories: categories(data.categories),
-                      requestedStatus
+                      requestedStatus,
+                      ...(data.termsOnly === true && { termsOnly: true })
                   }
                 : null;
         case 'publish':

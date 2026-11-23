@@ -23,11 +23,25 @@ export interface ArticleRecord {
     featuredUrl: string | null;
     featuredImage: Record<string, unknown> | null;
     reported: ReportedState | null;
+    /** SHA-256 of the Aranx fields written to the entry. Older records lack it. */
+    contentHash: string | null;
+    /**
+     * The entry existed before the plugin, for example a post migrated from
+     * WordPress, and a conversion script linked it. The first import records
+     * the content hash and leaves the entry as it is.
+     */
+    adopted: boolean;
 }
 
 export interface FeedState {
     cursor: string | null;
     lastRunAt: string | null;
+    /**
+     * Set by a conversion script, never by the plugin. The feed does not
+     * import a new article created before this time: it predates the
+     * plugin and was never on the site.
+     */
+    importAfter: string | null;
 }
 
 const FEED_KEY = 'feed';
@@ -72,7 +86,9 @@ export function toArticleRecord(value: unknown): ArticleRecord | null {
         featuredImage: isRecord(value.featuredImage)
             ? value.featuredImage
             : null,
-        reported: toReported(value.reported)
+        reported: toReported(value.reported),
+        contentHash: stringOrNull(value.contentHash),
+        adopted: value.adopted === true
     };
 }
 
@@ -120,7 +136,8 @@ export async function readFeedState(ctx: PluginContext): Promise<FeedState> {
     const value = await ctx.kv.get<unknown>(FEED_KEY);
     return {
         cursor: isRecord(value) ? stringOrNull(value.cursor) : null,
-        lastRunAt: isRecord(value) ? stringOrNull(value.lastRunAt) : null
+        lastRunAt: isRecord(value) ? stringOrNull(value.lastRunAt) : null,
+        importAfter: isRecord(value) ? stringOrNull(value.importAfter) : null
     };
 }
 

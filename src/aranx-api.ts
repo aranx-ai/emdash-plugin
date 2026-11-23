@@ -57,6 +57,8 @@ export interface AranxArticle {
 export interface FeedItem {
     id: string;
     deleted: boolean;
+    /** Missing on deleted items. */
+    createdAt: string | null;
     updatedAt: string;
 }
 
@@ -178,6 +180,7 @@ export function parseFeedPage(body: unknown): FeedPage {
         return {
             id: String(item.id),
             deleted: item.deleted === true,
+            createdAt: str(item.created_at),
             updatedAt: String(item.updated_at)
         };
     });
