@@ -46,7 +46,7 @@
             "apiBaseUrl": {
                 "type": "url",
                 "label": "API URL",
-                "default": "https://aranx.com/api/v1/public"
+                "default": "https://api.aranx.com/api/v1/public"
             }
         }
     }
