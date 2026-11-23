@@ -4,6 +4,11 @@ import {
     type SandboxedPlugin
 } from 'emdash/plugin';
 import { handleAdmin } from './admin';
+import {
+    handleConnectCallback,
+    runConfirmTask,
+    runRotateTask
+} from './connect';
 import { articles } from './store';
 import {
     runArticleTask,
@@ -64,6 +69,10 @@ const plugin: SandboxedPlugin = {
                 case 'feed':
                     await runFeedTask(ctx);
                     return;
+                case 'rotate':
+                    return runRotateTask(ctx, task.code);
+                case 'confirm':
+                    return runConfirmTask(ctx);
             }
         },
         'content:afterPublish': (event, ctx) =>
@@ -104,6 +113,18 @@ const plugin: SandboxedPlugin = {
                     headers: routeCtx.request.headers,
                     body: routeCtx.input
                 })
+        }),
+        // Aranx sends the browser here after the user approves the
+        // connection. A redirect cannot send the header that private routes
+        // need, so the route is public and checks the `state` itself.
+        connect: pluginRoute({
+            public: true,
+            methods: ['GET'],
+            // No body: the input is the query string.
+            request: { body: 'none' },
+            response: 'raw',
+            handler: (routeCtx, ctx) =>
+                handleConnectCallback(ctx, routeCtx.input)
         }),
         admin: {
             permission: 'plugins:manage',

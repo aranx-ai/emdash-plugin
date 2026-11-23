@@ -50,7 +50,10 @@ function fakeContext(
     if (stored) records.set(ARTICLE_ID, stored);
     const ctx = {
         settings: {
-            list: async () => [{ key: 'apiKey', value: 'arx_sk_test' }]
+            list: async () => [
+                { key: 'apiKey', value: 'arx_sk_test' },
+                { key: 'webhookSecret', value: 'arx_whsec_test' }
+            ]
         },
         storage: {
             articles: {

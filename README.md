@@ -56,11 +56,53 @@ emdash({
 
 ## Configure
 
-1. In Aranx, create an API connection for the website. Copy the API key and
-   the webhook signing secret.
+1. In Aranx, add the website with the address of the EmDash site.
+2. In EmDash, open the **Aranx** admin page and click **Connect to Aranx**.
+3. Sign in to Aranx, pick the website, and click **Authorize**.
+
+Aranx sends the API key and the webhook signing secret to the plugin and
+saves the plugin's webhook URL. Change the collection or category taxonomy in
+**Plugins > Aranx > Settings** if the site does not use `posts` and
+`category`.
+
+### How the connection works
+
+1. **Connect to Aranx** stores a state and a PKCE verifier, then opens the
+   approval page `https://app.aranx.com/auth/emdash/consent`.
+2. After approval, Aranx sends the browser to the public route
+   `/_emdash/api/plugins/<plugin id>/connect` with a one-time code.
+3. The route checks the state, then trades the code and the verifier for the
+   keys at `https://api.aranx.com/api/v1/auth/emdash/exchange`.
+4. The plugin stores the keys, then calls `/confirm` with the new API key.
+   Only then does Aranx switch to the new keys. The old keys work until this
+   call, and the plugin retries it from a cron task.
+
+The callback uses 7 subrequests, or at most 9 when the confirm fails.
+
+### Where the keys are stored
+
+EmDash encrypts `secret` settings with `EMDASH_ENCRYPTION_KEY`. Without that
+Worker secret, EmDash refuses to save them. The plugin then stores both keys
+without encryption in its own KV storage, and its admin page says so. To
+encrypt them, add `EMDASH_ENCRYPTION_KEY` to the Worker and click
+**Reconnect**.
+
+### Replace the keys
+
+Click **Reconnect** on the plugin page, or **Reconnect** on the Publishing
+page in Aranx. Aranx then sends a signed `connection.rotate` webhook with a
+one-time code, and the plugin trades the code for new keys the same way. The
+webhook carries no key. While new keys wait for the confirm, the webhook
+route answers `503` to a signature that does not match, so Aranx retries.
+
+### Manual setup
+
+The manual steps still work.
+
+1. In Aranx, create an API connection for the website (**Custom site**).
+   Copy the API key and the webhook signing secret.
 2. In EmDash, open **Plugins > Aranx > Settings**. Paste the API key and the
-   webhook secret. Change the collection or category taxonomy if the site
-   does not use `posts` and `category`.
+   webhook secret. This needs `EMDASH_ENCRYPTION_KEY`.
 3. Open the **Aranx** admin page and copy the webhook URL. It is
    `https://<your-site>/_emdash/api/plugins/<plugin id>/webhook`. A registry
    install has the ID `r_otneixpnd6iliahd`. A local install has the ID

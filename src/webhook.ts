@@ -4,8 +4,9 @@ import {
     type PluginResponse
 } from 'emdash/plugin';
 import { readConfig } from './config';
+import { isConnectInFlight } from './connect';
 import { verifySignature } from './signature';
-import { readWebsiteId, writeWebsiteId } from './store';
+import { readConnectState, readWebsiteId, writeWebsiteId } from './store';
 import { scheduleTask } from './tasks';
 
 /**
@@ -14,7 +15,7 @@ import { scheduleTask } from './tasks';
  *
  * The handler verifies the event and queues an import task. The import runs
  * on the next cron tick, so the answer is fast and stays within the sandbox
- * limits. Worst case: 4 calls.
+ * limits. Worst case: 5 calls.
  */
 
 export const MAX_WEBHOOK_BODY_BYTES = 64 * 1024;
@@ -63,6 +64,8 @@ interface Payload {
     websiteId: string;
     timestamp: string;
     requestedStatus: 'published' | 'draft' | null;
+    /** The one-time code of a `connection.rotate` event. */
+    rotationCode: string | null;
 }
 
 function parsePayload(body: Uint8Array): Payload | null {
@@ -95,6 +98,10 @@ function parsePayload(body: Uint8Array): Payload | null {
             data.requested_status === 'published' ||
             data.requested_status === 'draft'
                 ? data.requested_status
+                : null,
+        rotationCode:
+            typeof data.rotation_code === 'string' && data.rotation_code
+                ? data.rotation_code
                 : null
     };
 }
@@ -104,7 +111,7 @@ export async function handleWebhook(
     request: WebhookRequest,
     now = Date.now()
 ): Promise<PluginResponse> {
-    const { webhookSecret } = await readConfig(ctx); // 1
+    const { webhookSecret } = await readConfig(ctx); // 1, or 2 with keys in KV
     // 503 makes Aranx retry after the secret is saved.
     if (!webhookSecret) return json(503, { error: 'not_configured' });
 
@@ -130,6 +137,10 @@ export async function handleWebhook(
         return json(413, { error: 'payload_too_large' });
     }
     if (!(await verifySignature(webhookSecret, request.body, signature))) {
+        // During a key change this site and Aranx can hold different
+        // secrets for a moment. Aranx retries a 503 and not a 401.
+        if (isConnectInFlight(await readConnectState(ctx), now))
+            return json(503, { error: 'rotation_pending' });
         return json(401, { error: 'invalid_signature' });
     }
     const payload = parsePayload(request.body);
@@ -144,6 +155,13 @@ export async function handleWebhook(
         await writeWebsiteId(ctx, payload.websiteId); // 3
     else if (websiteId !== payload.websiteId)
         return json(400, { error: 'unknown_website' });
+
+    if (payload.event === 'connection.rotate') {
+        if (!payload.rotationCode)
+            return json(400, { error: 'invalid_payload' });
+        await scheduleTask(ctx, { kind: 'rotate', code: payload.rotationCode });
+        return json(202, { received: true, queued: true });
+    }
 
     if (ARTICLE_EVENTS.has(payload.event)) {
         if (!payload.articleId) return json(400, { error: 'invalid_payload' });

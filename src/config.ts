@@ -1,4 +1,5 @@
 import type { PluginContext } from 'emdash/plugin';
+import { readPlainCredentials } from './store';
 import {
     AranxApiError,
     DEFAULT_API_BASE_URL,
@@ -11,6 +12,11 @@ export interface PluginConfig {
     collection: string;
     taxonomy: string;
     apiBaseUrl: string;
+    /**
+     * Where the keys come from: the encrypted settings, or plugin KV in plain
+     * text (a site without `EMDASH_ENCRYPTION_KEY`). Null when there are none.
+     */
+    storage: 'settings' | 'kv' | null;
 }
 
 // The URL that versions before 0.1.8 pre-filled and EmDash saved with the
@@ -27,16 +33,32 @@ function apiBaseUrl(saved: string | null): string {
     return url === LEGACY_API_BASE_URL ? DEFAULT_API_BASE_URL : url;
 }
 
-/** Reads every setting in one bridge call. */
+/**
+ * Reads every setting in one bridge call. The keys in the settings win. When
+ * the settings do not hold both, a second call reads the plain-text keys
+ * that the connection flow stored in KV.
+ */
 export async function readConfig(ctx: PluginContext): Promise<PluginConfig> {
     const entries = new Map(
         (await ctx.settings.list()).map(
             (entry) => [entry.key, entry.value] as const
         )
     );
+    let apiKey = setting(entries, 'apiKey');
+    let webhookSecret = setting(entries, 'webhookSecret');
+    let storage: PluginConfig['storage'] =
+        apiKey || webhookSecret ? 'settings' : null;
+    if (!apiKey || !webhookSecret) {
+        const plain = await readPlainCredentials(ctx);
+        if (plain) {
+            ({ apiKey, webhookSecret } = plain);
+            storage = 'kv';
+        }
+    }
     return {
-        apiKey: setting(entries, 'apiKey'),
-        webhookSecret: setting(entries, 'webhookSecret'),
+        apiKey,
+        webhookSecret,
+        storage,
         collection: setting(entries, 'collection') ?? 'posts',
         taxonomy: setting(entries, 'taxonomy') ?? 'category',
         apiBaseUrl: apiBaseUrl(setting(entries, 'apiBaseUrl'))
