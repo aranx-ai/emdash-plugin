@@ -11,7 +11,7 @@ import {
     type ArticleReport,
     type ArticleStatus
 } from './aranx-api';
-import { apiConfig, readConfig } from './config';
+import { apiConfig, readConfig, readTaxonomy } from './config';
 import {
     bodyImageSources,
     toPortableText,
@@ -385,7 +385,7 @@ export async function runTermsTask(
         ) {
             throw new Error('The taxonomies:write capability is not granted');
         }
-        const { taxonomy } = await readConfig(ctx); // 1
+        const taxonomy = await readTaxonomy(ctx); // 1
         const map = await readCategoryTerms(ctx); // 2
         const missing = task.categories.filter((category) => !map[category.id]);
         let changed = false;

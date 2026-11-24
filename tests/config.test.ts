@@ -4,7 +4,11 @@ import { readConfig } from '../src/config';
 
 function withApiUrl(value: string | null) {
     const entries = value === null ? [] : [{ key: 'apiBaseUrl', value }];
-    return { settings: { list: async () => entries } } as unknown as PluginContext;
+    return {
+        settings: { list: async () => entries },
+        // No keys in the settings, so the plain-text copy is read too.
+        kv: { get: async () => null }
+    } as unknown as PluginContext;
 }
 
 describe('readConfig', () => {
