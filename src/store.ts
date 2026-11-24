@@ -194,8 +194,7 @@ export function writeWebsiteId(
  * - `pending`: the new keys are stored here, and Aranx has not confirmed
  *   them yet. Aranx still accepts the old key and signs with the old secret.
  * - `connected`: Aranx confirmed the keys.
- * - `failed`: the last attempt failed. The keys that were stored before
- *   still work.
+ * - `failed`: the last attempt failed. `error` says what to do next.
  */
 export interface ConnectState {
     status: 'started' | 'pending' | 'connected' | 'failed';

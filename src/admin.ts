@@ -31,7 +31,7 @@ function parseInteraction(input: unknown): Interaction {
     return { type, actionId };
 }
 
-type Toast = { type: 'success' | 'error'; message: string };
+type Toast = { type: 'success' | 'error' | 'info'; message: string };
 
 /**
  * The Aranx admin page: the connection to Aranx, the sync state, and a sync
@@ -45,16 +45,15 @@ export async function handleAdmin(
     const action =
         interaction.type === 'block_action' ? interaction.actionId : null;
 
-    // The button opens the Aranx approval page in a new tab. The page
-    // itself stays as it is.
-    const navigate =
-        action === 'connect'
-            ? { kind: 'external' as const, url: await startConnect(ctx) }
-            : undefined;
+    // The EmDash admin page ignores `navigate` in an action answer, so the
+    // answer shows a link to the Aranx approval page. Only this action
+    // makes the URL: a page load must not replace the verifier of an
+    // approval that waits in another tab.
+    const approveUrl = action === 'connect' ? await startConnect(ctx) : null;
 
     const [config, connect, count, feed] = await Promise.all([
         readConfig(ctx),
-        navigate ? null : readConnectState(ctx),
+        approveUrl ? null : readConnectState(ctx),
         articles(ctx).count(),
         readFeedState(ctx)
     ]);
@@ -78,17 +77,38 @@ export async function handleAdmin(
         await dropPlainCredentials(ctx);
 
     const blocks: unknown[] = [];
+    if (approveUrl) {
+        toast = { type: 'info', message: 'Approve the connection in Aranx' };
+        blocks.push(
+            {
+                type: 'banner',
+                title: 'Approve the connection in Aranx',
+                description:
+                    'Open Aranx, choose the website, and approve. Aranx then sends you back to this page.',
+                variant: 'alert'
+            },
+            {
+                type: 'actions',
+                elements: [
+                    {
+                        type: 'link',
+                        label: 'Approve in Aranx',
+                        target: { kind: 'external', url: approveUrl },
+                        appearance: 'primary'
+                    }
+                ]
+            }
+        );
+    }
     if (connect?.status === 'failed' && connect.error) {
         blocks.push({
             type: 'banner',
             title: 'The connection to Aranx failed',
-            description: configured
-                ? `${connect.error} The keys that were saved before still work.`
-                : connect.error,
+            description: connect.error,
             variant: 'error'
         });
     }
-    if (!configured) {
+    if (!configured && !approveUrl) {
         blocks.push({
             type: 'banner',
             title: 'Connect this site to Aranx',
@@ -139,9 +159,5 @@ export async function handleAdmin(
             ]
         }
     );
-    return {
-        blocks,
-        ...(toast ? { toast } : {}),
-        ...(navigate ? { navigate } : {})
-    };
+    return { blocks, ...(toast ? { toast } : {}) };
 }

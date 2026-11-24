@@ -3,10 +3,11 @@ import {
     type PluginContext,
     type PluginResponse
 } from 'emdash/plugin';
-import { readConfig } from './config';
+import { CREDENTIALS_SETTING, encodeCredentials, readConfig } from './config';
 import {
     deletePlainCredentials,
     readConnectState,
+    readWebsiteId,
     writeConnectState,
     writePlainCredentials,
     writeWebsiteId,
@@ -25,10 +26,12 @@ import { scheduleTask } from './tasks';
  * 3. The route trades the code and the verifier for the API key and the
  *    webhook secret, stores them, and confirms to Aranx with the new key.
  *
- * Aranx keeps the old key and secret valid until the confirm call, so a
- * failure at any step leaves a connected site connected. Aranx can also
- * start step 3 itself ("Reconnect" in Aranx): it sends a signed
- * `connection.rotate` webhook that carries a one-time code.
+ * Aranx keeps the old key and secret valid until the confirm call. A
+ * failure before the new keys are stored leaves a connected site connected.
+ * After that, a confirm that Aranx refuses leaves keys that do not work, and
+ * the admin connects again. Aranx can also start step 3 itself ("Reconnect"
+ * in Aranx): it sends a signed `connection.rotate` webhook that carries a
+ * one-time code.
  *
  * The exchange and confirm calls go to a fixed Aranx origin, never to the
  * `apiBaseUrl` setting, which a site admin can edit.
@@ -42,6 +45,11 @@ export const ARANX_CONNECT_API = 'https://api.aranx.com/api/v1/auth/emdash';
 const START_MAX_AGE_MS = 15 * 60 * 1000;
 /** A webhook signed with the other secret gets a retry for this long. */
 const IN_FLIGHT_MAX_AGE_MS = 60 * 60 * 1000;
+/**
+ * Aranx may have signed a delivery with the old secret just before the
+ * confirm. It gets a retry for this long after the keys are confirmed.
+ */
+const CONFIRMED_GRACE_MS = 5 * 60 * 1000;
 
 export function connectPath(pluginId: string): string {
     return `/_emdash/api/plugins/${encodeURIComponent(pluginId)}/connect`;
@@ -211,29 +219,42 @@ async function confirm(
 }
 
 /**
- * Stores the keys as encrypted `secret` settings. EmDash refuses those on a
- * site without the `EMDASH_ENCRYPTION_KEY` Worker secret. The keys then go
- * to plugin KV in plain text, and the admin page says so. 2 calls, 3 when
- * the second setting fails after the first.
+ * EmDash refuses a `secret` setting on a site without the
+ * `EMDASH_ENCRYPTION_KEY` Worker secret. The sandbox bridge keeps the
+ * message of that error and may drop its code.
+ */
+function isMissingEncryptionKey(error: unknown): boolean {
+    if (typeof error !== 'object' || error === null) return false;
+    const code = 'code' in error ? error.code : null;
+    const text = 'message' in error ? error.message : null;
+    return (
+        code === 'PLUGIN_SETTING_ENCRYPTION_KEY_MISSING' ||
+        (typeof text === 'string' && text.includes('EMDASH_ENCRYPTION_KEY'))
+    );
+}
+
+/**
+ * Stores the key and the secret as one encrypted `secret` setting, in one
+ * write. On a site without `EMDASH_ENCRYPTION_KEY` the pair goes to plugin
+ * KV in plain text, and the admin page says so. Any other write error is
+ * thrown: the old pair stays in use and nothing is confirmed. 1 or 2 calls.
  */
 export async function storeCredentials(
     ctx: PluginContext,
     credentials: StoredCredentials
 ): Promise<'settings' | 'kv'> {
-    let wroteApiKey = false;
     try {
-        await ctx.settings.set('apiKey', credentials.apiKey);
-        wroteApiKey = true;
-        await ctx.settings.set('webhookSecret', credentials.webhookSecret);
+        await ctx.settings.set(
+            CREDENTIALS_SETTING,
+            encodeCredentials(credentials)
+        );
         return 'settings';
-    } catch {
+    } catch (error) {
+        if (!isMissingEncryptionKey(error)) throw error;
         await writePlainCredentials(ctx, {
             apiKey: credentials.apiKey,
             webhookSecret: credentials.webhookSecret
         });
-        // The settings win over KV. A new key next to the old secret there
-        // would break the webhook, so remove the half-written pair.
-        if (wroteApiKey) await ctx.settings.delete('apiKey').catch(() => false);
         return 'kv';
     }
 }
@@ -242,18 +263,40 @@ function message(error: unknown): string {
     return error instanceof Error ? error.message : 'Unknown error';
 }
 
+const OTHER_WEBSITE =
+    'This site is connected to another Aranx website. Approve the connection for that website.';
+
 /**
- * Stores the keys, then confirms. A confirm that fails leaves the state
- * `pending` and queues a retry: both keys work in Aranx until it passes.
- * Up to 7 calls.
+ * Stores the keys, checks that the plugin reads them back, then confirms.
+ * A confirm that fails for now leaves the state `pending`: the next request
+ * with the new key confirms it, and so does the `confirm` task. A confirm
+ * that Aranx refuses leaves keys that Aranx does not accept, so the admin
+ * connects again. Up to 7 calls, 8 with `retry`.
+ *
+ * `pinned` is the website ID this site is bound to, already checked against
+ * the grant.
  */
 async function storeAndConfirm(
     ctx: PluginContext,
-    grant: Grant
+    grant: Grant,
+    pinned: string | null,
+    retry: 'task' | 'admin-page'
 ): Promise<ConnectState['status']> {
-    const storage = await storeCredentials(ctx, grant); // 2 or 3
+    const storage = await storeCredentials(ctx, grant); // 1 or 2
+    // A request with the new key confirms the grant in Aranx. So the plugin
+    // must select this pair, and no older one, before Aranx hears of it.
+    const stored = await readConfig(ctx); // 1 or 2
+    if (
+        stored.apiKey !== grant.apiKey ||
+        stored.webhookSecret !== grant.webhookSecret
+    ) {
+        throw new ConnectError(
+            'The plugin does not read back the keys it stored. Remove the API key and the webhook secret from the plugin settings, then connect again.',
+            true
+        );
+    }
     // One key and secret belong to one Aranx website.
-    await writeWebsiteId(ctx, grant.websiteId); // 1
+    if (!pinned) await writeWebsiteId(ctx, grant.websiteId); // 1
     const next = {
         state: null,
         verifier: null,
@@ -265,20 +308,24 @@ async function storeAndConfirm(
         await confirm(ctx, grant.apiKey, grant.confirmationId); // 1
     } catch (error) {
         if (error instanceof ConnectError && error.final) {
-            // Aranx no longer knows this grant, for example after a newer
-            // one replaced it.
+            // Aranx no longer knows this grant. The keys stored above do
+            // not work, and the earlier ones are gone.
             await writeConnectState(ctx, {
                 ...next,
                 status: 'failed',
-                error: message(error)
-            });
+                error: `${message(error)}. Aranx did not accept the new keys. Connect to Aranx again.`
+            }); // 1
             return 'failed';
         }
         await writeConnectState(ctx, { ...next, status: 'pending' }); // 1
-        await scheduleTask(ctx, { kind: 'confirm' }); // 1
+        // The admin page queues the retry itself when it shows `pending`.
+        if (retry === 'task') await scheduleTask(ctx, { kind: 'confirm' }); // 1
         return 'pending';
     }
     await writeConnectState(ctx, { ...next, status: 'connected' }); // 1
+    // The encrypted pair is in use, so a plain-text pair of an earlier
+    // connection can go.
+    if (storage === 'settings') await deletePlainCredentials(ctx); // 1
     return 'connected';
 }
 
@@ -317,7 +364,7 @@ async function fail(
 /**
  * The public `connect` route. Aranx sends the browser here after the user
  * approves or cancels. The route always answers with a redirect to the
- * plugin's admin page, which shows the result. Worst case: 9 calls.
+ * plugin's admin page, which shows the result. Worst case: 10 calls.
  *
  * Anyone can call a public route. Without the `state` of a start made on
  * this site in the last 15 minutes the route does nothing, and the code is
@@ -361,8 +408,14 @@ export async function handleConnectCallback(
     } catch (error) {
         return fail(ctx, started, `Could not get the keys. ${message(error)}`);
     }
+    // The feed position and the article links belong to the pinned website.
+    // Nothing is stored yet, so the keys in use stay as they are.
+    const pinned = await readWebsiteId(ctx); // 3
+    if (pinned && pinned !== grant.websiteId)
+        return fail(ctx, started, OTHER_WEBSITE);
     try {
-        await storeAndConfirm(ctx, grant); // up to 7
+        // The redirect below opens the admin page, which queues a retry.
+        await storeAndConfirm(ctx, grant, pinned, 'admin-page'); // up to 7
     } catch (error) {
         return fail(ctx, started, `Could not store the keys. ${message(error)}`);
     }
@@ -373,7 +426,7 @@ export async function handleConnectCallback(
  * The `rotate` task. Aranx "Reconnect" sends a signed `connection.rotate`
  * webhook with a one-time code, and this task trades it for new keys. The
  * keys come from the fixed Aranx origin, never from the webhook body, so a
- * forged webhook cannot change them. Up to 9 calls.
+ * forged webhook cannot change them. Up to 10 calls.
  */
 export async function runRotateTask(
     ctx: PluginContext,
@@ -390,6 +443,18 @@ export async function runRotateTask(
         }
         throw error;
     }
+    const pinned = await readWebsiteId(ctx); // 2
+    if (pinned && pinned !== grant.websiteId) {
+        await writeConnectState(ctx, {
+            status: 'failed',
+            state: null,
+            verifier: null,
+            confirmationId: null,
+            storage: null,
+            error: OTHER_WEBSITE
+        });
+        return;
+    }
     // A webhook signed with the old secret now gets a 503, and Aranx
     // retries it after the confirm call.
     await writeConnectState(ctx, {
@@ -399,8 +464,8 @@ export async function runRotateTask(
         confirmationId: grant.confirmationId,
         storage: null,
         error: null
-    }); // 2
-    await storeAndConfirm(ctx, grant); // up to 7
+    }); // 3
+    await storeAndConfirm(ctx, grant, pinned, 'task'); // up to 7
 }
 
 /**
@@ -410,7 +475,7 @@ export async function runRotateTask(
 export async function runConfirmTask(ctx: PluginContext): Promise<void> {
     const state = await readConnectState(ctx);
     if (!state || state.status !== 'pending' || !state.confirmationId) return;
-    const { apiKey } = await readConfig(ctx);
+    const { apiKey, storage } = await readConfig(ctx);
     if (!apiKey) return;
     try {
         await confirm(ctx, apiKey, state.confirmationId);
@@ -419,26 +484,32 @@ export async function runConfirmTask(ctx: PluginContext): Promise<void> {
         await writeConnectState(ctx, {
             ...state,
             status: 'failed',
-            error: message(error)
+            error: `${message(error)}. Aranx did not accept the new keys. Connect to Aranx again.`
         });
         return;
     }
     await writeConnectState(ctx, { ...state, status: 'connected' });
+    if (storage === 'settings') await deletePlainCredentials(ctx);
 }
 
 /**
  * True while new keys are stored here and Aranx may still sign with the
- * old secret, or the reverse. The webhook answers 503 then, and Aranx
- * retries the delivery.
+ * old secret, or the reverse, and for 5 minutes after the confirm. The
+ * webhook answers 503 then, and Aranx retries the delivery.
  */
 export function isConnectInFlight(
     state: ConnectState | null,
     now = Date.now()
 ): boolean {
-    if (!state || (state.status !== 'started' && state.status !== 'pending'))
-        return false;
+    if (!state || state.status === 'failed') return false;
     const age = now - Date.parse(state.at);
-    return Number.isFinite(age) && age <= IN_FLIGHT_MAX_AGE_MS;
+    return (
+        Number.isFinite(age) &&
+        age <=
+            (state.status === 'connected'
+                ? CONFIRMED_GRACE_MS
+                : IN_FLIGHT_MAX_AGE_MS)
+    );
 }
 
 /** Removes plain-text keys that the encrypted settings replaced. */
