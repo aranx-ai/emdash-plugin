@@ -3,7 +3,8 @@ import type { PluginContext } from 'emdash/plugin';
 /**
  * Plugin state. The `articles` storage collection links each Aranx article
  * ID to its EmDash entry. KV holds the change feed position, the category
- * map, and the website ID.
+ * map, the website ID, the state of the connection to Aranx, and, on a site
+ * without `EMDASH_ENCRYPTION_KEY`, the API key and webhook secret.
  */
 
 export interface ReportedState {
@@ -47,6 +48,8 @@ export interface FeedState {
 const FEED_KEY = 'feed';
 const CATEGORY_TERMS_KEY = 'categoryTerms';
 const WEBSITE_ID_KEY = 'websiteId';
+const CONNECT_KEY = 'connect';
+const CREDENTIALS_KEY = 'credentials';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -180,4 +183,94 @@ export function writeWebsiteId(
     websiteId: string
 ): Promise<void> {
     return ctx.kv.set(WEBSITE_ID_KEY, websiteId);
+}
+
+/**
+ * The connection to Aranx made with the "Connect to Aranx" button or an
+ * Aranx "Reconnect".
+ *
+ * - `started`: the admin opened the Aranx approval page. `state` and
+ *   `verifier` wait for the callback.
+ * - `pending`: the new keys are stored here, and Aranx has not confirmed
+ *   them yet. Aranx still accepts the old key and signs with the old secret.
+ * - `connected`: Aranx confirmed the keys.
+ * - `failed`: the last attempt failed. `error` says what to do next.
+ */
+export interface ConnectState {
+    status: 'started' | 'pending' | 'connected' | 'failed';
+    /** ISO time of the last change. */
+    at: string;
+    state: string | null;
+    verifier: string | null;
+    /** The ID that the confirm call sends to Aranx. */
+    confirmationId: string | null;
+    /** Where the keys are: encrypted settings, or plugin KV in plain text. */
+    storage: 'settings' | 'kv' | null;
+    error: string | null;
+}
+
+export async function readConnectState(
+    ctx: PluginContext
+): Promise<ConnectState | null> {
+    const value = await ctx.kv.get<unknown>(CONNECT_KEY);
+    if (!isRecord(value)) return null;
+    const status = value.status;
+    if (
+        status !== 'started' &&
+        status !== 'pending' &&
+        status !== 'connected' &&
+        status !== 'failed'
+    )
+        return null;
+    return {
+        status,
+        at: stringOrNull(value.at) ?? '',
+        state: stringOrNull(value.state),
+        verifier: stringOrNull(value.verifier),
+        confirmationId: stringOrNull(value.confirmationId),
+        storage:
+            value.storage === 'settings' || value.storage === 'kv'
+                ? value.storage
+                : null,
+        error: stringOrNull(value.error)
+    };
+}
+
+export function writeConnectState(
+    ctx: PluginContext,
+    state: Omit<ConnectState, 'at'>
+): Promise<void> {
+    return ctx.kv.set(CONNECT_KEY, { ...state, at: new Date().toISOString() });
+}
+
+export interface StoredCredentials {
+    apiKey: string;
+    webhookSecret: string;
+}
+
+/** The keys kept in plain text, for a site without `EMDASH_ENCRYPTION_KEY`. */
+export async function readPlainCredentials(
+    ctx: PluginContext
+): Promise<StoredCredentials | null> {
+    const value = await ctx.kv.get<unknown>(CREDENTIALS_KEY);
+    if (
+        !isRecord(value) ||
+        typeof value.apiKey !== 'string' ||
+        typeof value.webhookSecret !== 'string' ||
+        !value.apiKey ||
+        !value.webhookSecret
+    )
+        return null;
+    return { apiKey: value.apiKey, webhookSecret: value.webhookSecret };
+}
+
+export function writePlainCredentials(
+    ctx: PluginContext,
+    credentials: StoredCredentials
+): Promise<void> {
+    return ctx.kv.set(CREDENTIALS_KEY, credentials);
+}
+
+export function deletePlainCredentials(ctx: PluginContext): Promise<boolean> {
+    return ctx.kv.delete(CREDENTIALS_KEY);
 }

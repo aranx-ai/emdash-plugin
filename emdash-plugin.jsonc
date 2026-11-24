@@ -39,6 +39,14 @@
     "admin": {
         "pages": [{ "path": "/status", "label": "Aranx", "icon": "sparkles" }],
         "settingsSchema": {
+            // "Connect to Aranx" writes this one. It holds the API key and the
+            // webhook secret as one value, so one write replaces both.
+            "credentials": {
+                "type": "secret",
+                "label": "Connection keys (managed by the plugin)",
+                "description": "Set by \"Connect to Aranx\". Do not edit."
+            },
+            // A manual setup: keys copied from Aranx.
             "apiKey": { "type": "secret", "label": "API key" },
             "webhookSecret": { "type": "secret", "label": "Webhook secret" },
             "collection": { "type": "string", "label": "Collection", "default": "posts" },

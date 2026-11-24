@@ -52,7 +52,11 @@ export type Task =
           requestedStatus: RequestedStatus | null;
       }
     | { kind: 'report'; articleId: string; gone: boolean }
-    | { kind: 'feed' };
+    | { kind: 'feed' }
+    /** Trades the one-time code of an Aranx "Reconnect" for new keys. */
+    | { kind: 'rotate'; code: string }
+    /** Repeats a confirm call to Aranx that failed. */
+    | { kind: 'confirm' };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -99,6 +103,11 @@ function taskName(task: Task): string {
         case 'publish':
         case 'report':
             return `${task.kind}_${namePart(task.articleId)}`;
+        case 'rotate':
+        case 'confirm':
+            // A new name per run, as for `feed`: a retry that the task
+            // queues during its own run must survive.
+            return `${task.kind}_${Date.now().toString(36)}`;
         case 'feed':
             // A one-shot task is deleted after it runs, together with any
             // update to the same name made during the run. The feed task
@@ -125,6 +134,11 @@ export function parseTask(event: CronEvent): Task | null {
         return { kind: 'feed' };
     }
     const data = event.data ?? {};
+    if (data.kind === 'confirm') return { kind: 'confirm' };
+    if (data.kind === 'rotate')
+        return typeof data.code === 'string' && data.code
+            ? { kind: 'rotate', code: data.code }
+            : null;
     const articleId =
         typeof data.articleId === 'string' ? data.articleId : null;
     if (!articleId) return null;
