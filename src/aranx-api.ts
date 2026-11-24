@@ -7,7 +7,7 @@ import type { ContentNode } from './portable-text';
  * Docs: https://docs.aranx.com/api-reference/introduction
  */
 
-export const DEFAULT_API_BASE_URL = 'https://aranx.com/api/v1/public';
+export const DEFAULT_API_BASE_URL = 'https://api.aranx.com/api/v1/public';
 
 export class AranxApiError extends Error {
     constructor(
