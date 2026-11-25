@@ -102,9 +102,21 @@ function fakeContext(options: FakeOptions = {}) {
                 count(() => {
                     kv.set(key, structuredClone(value));
                 }),
-            delete: (key: string) => count(() => kv.delete(key))
+            delete: (key: string) => count(() => kv.delete(key)),
+            list: () =>
+                count(() =>
+                    [...kv].map(([key, value]) => ({
+                        key,
+                        value: structuredClone(value)
+                    }))
+                )
         },
-        storage: { articles: { count: () => count(() => 0) } },
+        storage: {
+            articles: {
+                count: () => count(() => 0),
+                query: () => count(() => ({ items: [], hasMore: false }))
+            }
+        },
         cron: {
             schedule: (name: string, input: { data?: unknown }) =>
                 count(() => {
@@ -793,6 +805,63 @@ describe('admin page', () => {
 
         expect(link(response)).toBeNull();
         expect(fake.kv.get('connect')).toEqual(started);
+    });
+});
+
+describe('admin page budget', () => {
+    it('syncs, retries the confirm, and drops plain keys within 10 calls', async () => {
+        const fake = fakeContext({
+            settings: stored(NEW),
+            kv: {
+                credentials: OLD,
+                connect: {
+                    status: 'pending',
+                    at: new Date().toISOString(),
+                    confirmationId: 'confirmation-1',
+                    storage: 'kv'
+                }
+            }
+        });
+        Object.assign(fake.ctx, {
+            schema: { getCollection: () => Promise.resolve(null) }
+        });
+        fake.resetCalls();
+
+        await handleAdmin(fake.ctx, { type: 'block_action', action_id: 'sync' });
+
+        // 2 reads, sync, confirm, plain-key delete, count, query.
+        expect(fake.calls()).toBeLessThanOrEqual(10);
+        expect(fake.tasks.map((task) => task.data)).toEqual([
+            { kind: 'feed' },
+            { kind: 'confirm' }
+        ]);
+    });
+
+    it('disconnects within 10 calls and deletes every key', async () => {
+        const fake = fakeContext({
+            settings: { ...stored(NEW), ...OLD },
+            kv: { credentials: OLD, websiteId: 'website-1' }
+        });
+        fake.resetCalls();
+
+        const response = (await handleAdmin(fake.ctx, {
+            type: 'block_action',
+            action_id: 'disconnect'
+        })) as { toast: unknown };
+
+        expect(fake.calls()).toBeLessThanOrEqual(10);
+        expect(response.toast).toEqual({
+            type: 'success',
+            message: 'Disconnected from Aranx'
+        });
+        expect([...fake.settings.keys()]).toEqual([]);
+        expect(fake.kv.has('credentials')).toBe(false);
+        expect(fake.kv.get('websiteId')).toBe('website-1');
+        expect(fake.kv.get('connect')).toMatchObject({ status: 'disconnected' });
+        expect(await readConfig(fake.ctx)).toMatchObject({
+            apiKey: null,
+            webhookSecret: null
+        });
     });
 });
 

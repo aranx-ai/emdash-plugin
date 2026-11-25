@@ -25,7 +25,7 @@
     // The Aranx API and the image CDN. `*.aranx.com` also matches aranx.com.
     "allowedHosts": ["*.aranx.com"],
     "storage": {
-        "articles": { "indexes": ["entryId"] }
+        "articles": { "indexes": ["entryId", "activityAt"] }
     },
 
     // Listing images go on each release record. A release without them shows none.

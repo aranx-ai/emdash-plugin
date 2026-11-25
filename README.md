@@ -104,8 +104,10 @@ deletes the plain-text copy once Aranx confirms the encrypted keys.
 
 ### Replace the keys
 
-Click **Reconnect** on the plugin page, or **Reconnect** on the Publishing
-page in Aranx. Aranx then sends a signed `connection.rotate` webhook with a
+Click **Rotate keys** on the plugin page. The button reads **Reconnect**
+when the connection has a problem or the keys are not encrypted. Both start
+the connection flow above. You can also click **Reconnect** on the
+Publishing page in Aranx. Aranx then sends a signed `connection.rotate` webhook with a
 one-time code, and the plugin trades the code for new keys the same way. The
 webhook carries no key. While new keys wait for the confirm, and for 5
 minutes after it, the webhook route answers `503` to a signature that does
@@ -119,12 +121,58 @@ The manual steps still work.
    Copy the API key and the webhook signing secret.
 2. In EmDash, open **Plugins > Aranx > Settings**. Paste the API key and the
    webhook secret. This needs `EMDASH_ENCRYPTION_KEY`.
-3. Open the **Aranx** admin page and copy the webhook URL. It is
+3. Open the **Aranx** admin page, open **Technical details**, and copy the
+   webhook URL. It is
    `https://<your-site>/_emdash/api/plugins/<plugin id>/webhook`. A registry
    install has the ID `r_otneixpnd6iliahd`. A local install has the ID
    `aranx`.
 4. In Aranx, set that URL as the webhook URL of the API connection. Send a
    test event.
+
+### Disconnect
+
+**Disconnect** on the plugin page asks for a confirmation, then deletes the
+API key and the webhook secret from the settings and the plugin storage.
+The plugin stops importing, and the webhook answers `401` with
+`{"error": "disconnected"}`, which Aranx does not retry. The entries stay.
+The plugin keeps the Aranx website ID, the feed position, and the article
+links, so a new connection to the same website resumes where it stopped.
+
+Aranx has no call that lets the plugin revoke its key, so Aranx keeps the
+connection. Remove it on the Publishing page in Aranx. The plugin page links
+to it.
+
+## The admin page
+
+The **Aranx** page in the EmDash admin follows the dashboard of the Aranx
+WordPress plugin.
+
+- **Not connected:** a welcome page with **Connect to Aranx**, what the
+  plugin does, and what happens when you connect.
+- **Connected:** a link to the website in Aranx, then the status, the
+  number of linked articles, the time of the last sync, and the last signed
+  event from Aranx. A test event sent from Aranx shows there, so it proves
+  that the webhook reaches the site. The buttons are **Rotate keys**
+  (**Reconnect**), **Sync now**, **Disconnect**, and **Settings**.
+- **Status:** **Active**; **Confirming** while new keys wait for the Aranx
+  confirm; **Unstable** when the last sync failed or no sync ran for an
+  hour (the site's cron trigger stopped); **Connection lost** when Aranx
+  answers `401` or `403` to the API key. The last one shows a banner, a
+  **Reconnect** button, and the reasons it can happen.
+- **Recent sync activity:** the last change of each article, newest first.
+  `IN` means Aranx changed the entry (imported, updated). `OUT` means the
+  plugin sent the entry status to Aranx, or a site plugin refused the
+  publish, with the reason. Each row links to the entry.
+- **Content and SEO:** which field of the collection gets the title, the
+  body, the meta description, the featured image, and the SEO title, and
+  whether the collection has the EmDash SEO panel.
+- **Technical details:** plugin version and ID, API URL, collection,
+  taxonomy, Aranx website ID, and the webhook URL for a manual setup.
+
+The page reads all settings and all plugin KV in one call each, so a button
+click and the full page stay within 8 subrequests. The activity list costs
+no extra write: the record write that each import and report makes anyway
+carries the activity, and the `activityAt` index sorts it.
 
 ## How it works
 
@@ -199,6 +247,14 @@ Aranx repository has one for the Clem Around The Corner move:
   is no full scan.
 - A site with a publish policy, for example a required category, can refuse
   the publish. A new entry stays a draft, and Aranx shows the reason.
+- The activity list shows the last change of each article, not every event.
+  An article deleted in Aranx drops out of the list. Records from before
+  0.2.0 show up after their next change.
+- Some features of the WordPress plugin need Aranx endpoints that the
+  plugin API does not have: revoking the key on **Disconnect**, the hourly
+  heartbeat that Aranx shows as "last seen", and key rotation without an
+  approval. Body images stay on `images.aranx.com`, as in WordPress before
+  1.4.0. Only the featured image goes to the media library.
 
 ## Develop
 
