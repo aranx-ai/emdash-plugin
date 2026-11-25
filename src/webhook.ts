@@ -6,7 +6,12 @@ import {
 import { readConfig } from './config';
 import { isConnectInFlight } from './connect';
 import { verifySignature } from './signature';
-import { readConnectState, readWebsiteId, writeWebsiteId } from './store';
+import {
+    readConnectState,
+    readWebsiteId,
+    writeLastWebhook,
+    writeWebsiteId
+} from './store';
 import { scheduleTask } from './tasks';
 
 /**
@@ -15,7 +20,7 @@ import { scheduleTask } from './tasks';
  *
  * The handler verifies the event and queues an import task. The import runs
  * on the next cron tick, so the answer is fast and stays within the sandbox
- * limits. Worst case: 5 calls.
+ * limits. Worst case: 6 calls.
  */
 
 export const MAX_WEBHOOK_BODY_BYTES = 64 * 1024;
@@ -112,8 +117,14 @@ export async function handleWebhook(
     now = Date.now()
 ): Promise<PluginResponse> {
     const { webhookSecret } = await readConfig(ctx); // 1, or 2 with keys in KV
-    // 503 makes Aranx retry after the secret is saved.
-    if (!webhookSecret) return json(503, { error: 'not_configured' });
+    if (!webhookSecret) {
+        // After "Disconnect", Aranx must stop: it does not retry a 401.
+        // Otherwise 503 makes Aranx retry after the secret is saved.
+        const connect = await readConnectState(ctx); // 2 or 3
+        return connect?.status === 'disconnected'
+            ? json(401, { error: 'disconnected' })
+            : json(503, { error: 'not_configured' });
+    }
 
     const signature = request.headers['x-webhook-signature'];
 
@@ -150,11 +161,14 @@ export async function handleWebhook(
         return json(401, { error: 'stale_timestamp' });
 
     // One API key and secret belong to one Aranx website. Pin the first one.
-    const websiteId = await readWebsiteId(ctx); // 2
+    const websiteId = await readWebsiteId(ctx); // 2 or 3
     if (!websiteId)
-        await writeWebsiteId(ctx, payload.websiteId); // 3
+        await writeWebsiteId(ctx, payload.websiteId); // 3 or 4
     else if (websiteId !== payload.websiteId)
         return json(400, { error: 'unknown_website' });
+
+    // The admin page shows it, so a test event from Aranx proves the route.
+    await writeLastWebhook(ctx, payload.event); // 4 or 5
 
     if (payload.event === 'connection.rotate') {
         if (!payload.rotationCode)
@@ -172,7 +186,7 @@ export async function handleWebhook(
                 payload.event === 'article.published'
                     ? payload.requestedStatus
                     : null
-        }); // 4
+        }); // 5 or 6
         return json(202, { received: true, queued: true });
     }
 

@@ -644,11 +644,210 @@ describe('change feed', () => {
 });
 
 describe('admin page', () => {
+    type Page = { blocks: Array<Record<string, unknown>>; toast?: unknown };
+
+    function find(page: Page, type: string): Record<string, unknown>[] {
+        const all: Record<string, unknown>[] = [];
+        const walk = (blocks: Array<Record<string, unknown>>) => {
+            for (const block of blocks) {
+                if (block.type === type) all.push(block);
+                if (Array.isArray(block.blocks))
+                    walk(block.blocks as Array<Record<string, unknown>>);
+                if (Array.isArray(block.columns) && block.type === 'columns')
+                    for (const column of block.columns as Array<
+                        Array<Record<string, unknown>>
+                    >)
+                        walk(column);
+            }
+        };
+        walk(page.blocks);
+        return all;
+    }
+
+    function activityRows(page: Page) {
+        const table = find(page, 'table')[0] as { rows: Array<Record<string, unknown>> };
+        return table.rows.map((row) => ({
+            direction: row.direction,
+            event: row.event,
+            article: (row.article as { label: string }).label,
+            result: row.result
+        }));
+    }
+
+    function stat(page: Page, label: string) {
+        return find(page, 'stats')
+            .flatMap((block) => block.items as Array<Record<string, unknown>>)
+            .find((item) => item.label === label)?.value;
+    }
+
+    async function feedAnswers(current: PluginRuntimeTestHost, response: Response) {
+        const params = new URLSearchParams({
+            include_deleted: 'true',
+            limit: '3',
+            updated_after: '1970-01-01T00:00:00Z'
+        });
+        await current.http.respond(`${API}/articles?${params}`, response);
+    }
+
+    async function runFeed(current: PluginRuntimeTestHost) {
+        await current.transport
+            .invokeHook('cron', {
+                name: 'feed',
+                scheduledAt: new Date().toISOString()
+            })
+            .catch(() => undefined);
+    }
+
     it('shows the webhook URL', async () => {
         const current = await setup();
         const page = await current.admin.loadPage('/status');
         expect(JSON.stringify(page)).toContain(
             'https://blog.example.com/_emdash/api/plugins/aranx/webhook'
         );
+    });
+
+    it('welcomes a site that is not connected', async () => {
+        host = await createPluginRuntimeTestHost();
+        const page = (await host.admin.loadPage('/status')) as unknown as Page;
+        const [welcome] = find(page, 'empty');
+        expect(welcome).toMatchObject({
+            title: 'Welcome to Aranx',
+            actions: [{ label: 'Connect to Aranx', action_id: 'connect' }]
+        });
+        expect(find(page, 'accordion')[0]).toMatchObject({
+            label: 'What happens when you connect?'
+        });
+        expect(find(page, 'table')).toHaveLength(0);
+    });
+
+    it('lists the import and the report in the sync activity', async () => {
+        const current = await setup();
+        await deliver(current, {
+            event: 'article.published',
+            article_id: ARTICLE_ID,
+            requested_status: 'published'
+        });
+        await queueArticle(current);
+        await queueFeatured(current);
+        await queuePatch(current);
+        await drain(current);
+
+        const page = (await current.admin.loadPage('/status')) as unknown as Page;
+        expect(activityRows(page)).toEqual([
+            {
+                direction: 'OUT',
+                event: 'Sent status: published',
+                article: 'How to start a blog',
+                result: 'OK'
+            }
+        ]);
+        const [entry] = await current.inspect.content.list('posts');
+        const table = find(page, 'table')[0] as {
+            rows: Array<{ article: { target: unknown } }>;
+        };
+        expect(table.rows[0]!.article.target).toEqual({
+            kind: 'content',
+            collection: 'posts',
+            id: entry!.id
+        });
+        expect(stat(page, 'Status')).toBe('Active');
+        expect(stat(page, 'Articles')).toBe(1);
+        expect(stat(page, 'Last event from Aranx')).toBe('Just now');
+    });
+
+    it('shows a test event from Aranx as the last event', async () => {
+        const current = await setup();
+        await deliver(current, { event: 'test' });
+        const page = (await current.admin.loadPage('/status')) as unknown as Page;
+        const item = find(page, 'stats')
+            .flatMap((block) => block.items as Array<Record<string, unknown>>)
+            .find((entry) => entry.label === 'Last event from Aranx');
+        expect(item).toMatchObject({ value: 'Just now', description: 'test' });
+    });
+
+    it('shows where Aranx fields go, with the SEO panel', async () => {
+        const current = await setup();
+        const page = (await current.admin.loadPage('/status')) as unknown as Page;
+        const fields = find(page, 'fields').flatMap(
+            (block) => block.fields as Array<{ label: string; value: string }>
+        );
+        expect(fields).toEqual(
+            expect.arrayContaining([
+                { label: 'Meta description', value: 'excerpt' },
+                { label: 'Featured image', value: 'featured_image' },
+                { label: 'SEO title and description', value: 'EmDash SEO panel' }
+            ])
+        );
+    });
+
+    it('says the connection is lost when Aranx refuses the key', async () => {
+        const current = await setup();
+        await feedAnswers(
+            current,
+            Response.json({ error: 'invalid_api_key' }, { status: 401 })
+        );
+        await runFeed(current);
+
+        expect(await current.inspect.kv.get('feed')).toMatchObject({
+            error: { status: 401 }
+        });
+        const page = (await current.admin.loadPage('/status')) as unknown as Page;
+        expect(stat(page, 'Status')).toBe('Connection lost');
+        expect(find(page, 'banner')).toContainEqual(
+            expect.objectContaining({ title: 'Connection lost', variant: 'error' })
+        );
+        const buttons = find(page, 'actions').flatMap(
+            (block) => block.elements as Array<Record<string, unknown>>
+        );
+        expect(buttons).toContainEqual(
+            expect.objectContaining({ label: 'Reconnect', action_id: 'connect' })
+        );
+    });
+
+    it('clears the feed error after a good run', async () => {
+        const current = await setup();
+        await current.fixtures.plugin.kv('feed', {
+            cursor: null,
+            lastRunAt: null,
+            importAfter: null,
+            error: { message: 'down', status: 503, at: new Date().toISOString() }
+        });
+        await feedAnswers(
+            current,
+            Response.json({
+                articles: [],
+                pagination: { has_more: false, next_cursor: null }
+            })
+        );
+        await runFeed(current);
+
+        expect(await current.inspect.kv.get('feed')).toMatchObject({
+            error: null,
+            lastRunAt: expect.any(String)
+        });
+    });
+
+    it('disconnects: deletes the keys and stops the webhook', async () => {
+        const current = await setup();
+        await deliver(current, { event: 'test' });
+
+        const page = (await current.admin.act('/status', 'disconnect')) as unknown as Page;
+
+        expect(page.toast).toEqual({
+            type: 'success',
+            message: 'Disconnected from Aranx'
+        });
+        expect(find(page, 'empty')[0]).toMatchObject({ title: 'Welcome to Aranx' });
+        expect(find(page, 'banner')).toContainEqual(
+            expect.objectContaining({ title: 'Disconnected from Aranx' })
+        );
+        expect(await current.inspect.setting('apiKey')).toBeNull();
+        expect(await current.inspect.setting('webhookSecret')).toBeNull();
+        // The pin stays, so a new connection to the same website resumes.
+        expect(await current.inspect.kv.get('websiteId')).toBe(WEBSITE_ID);
+
+        const response = await deliver(current, { event: 'test' });
+        expect(response.status).toBe(401);
+        expect(await response.json()).toEqual({ error: 'disconnected' });
     });
 });

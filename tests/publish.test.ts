@@ -22,6 +22,9 @@ function storedRecord(reported: Partial<ReportedState> | null): ArticleRecord {
         featuredImage: null,
         contentHash: null,
         adopted: false,
+        title: 'Article',
+        activity: null,
+        activityAt: null,
         reported: reported
             ? {
                   status: 'draft',

@@ -67,30 +67,37 @@ function decodeCredentials(value: string | null): StoredCredentials | null {
         : null;
 }
 
-/**
- * Reads every setting in one bridge call. The pair from the connection flow
- * wins, then the `apiKey` and `webhookSecret` settings of a manual setup.
- * When the settings hold neither pair, a second call reads the plain-text
- * keys that the connection flow stored in KV.
- */
-export async function readConfig(ctx: PluginContext): Promise<PluginConfig> {
-    const entries = new Map(
+/** The settings that hold keys. "Disconnect" deletes them. */
+export const KEY_SETTINGS = [CREDENTIALS_SETTING, 'apiKey', 'webhookSecret'];
+
+export type SettingEntries = Map<string, unknown>;
+
+export async function readSettings(ctx: PluginContext): Promise<SettingEntries> {
+    return new Map(
         (await ctx.settings.list()).map(
             (entry) => [entry.key, entry.value] as const
         )
     );
+}
+
+/**
+ * The config from the settings and, when they hold no pair, the plain-text
+ * keys in KV. The pair from the connection flow wins, then the `apiKey` and
+ * `webhookSecret` settings of a manual setup.
+ */
+export function configFrom(
+    entries: SettingEntries,
+    plain: StoredCredentials | null
+): PluginConfig {
     const managed = decodeCredentials(setting(entries, CREDENTIALS_SETTING));
     let apiKey = managed?.apiKey ?? setting(entries, 'apiKey');
     let webhookSecret =
         managed?.webhookSecret ?? setting(entries, 'webhookSecret');
     let storage: PluginConfig['storage'] =
         apiKey || webhookSecret ? 'settings' : null;
-    if (!apiKey || !webhookSecret) {
-        const plain = await readPlainCredentials(ctx);
-        if (plain) {
-            ({ apiKey, webhookSecret } = plain);
-            storage = 'kv';
-        }
+    if ((!apiKey || !webhookSecret) && plain) {
+        ({ apiKey, webhookSecret } = plain);
+        storage = 'kv';
     }
     return {
         apiKey,
@@ -100,6 +107,25 @@ export async function readConfig(ctx: PluginContext): Promise<PluginConfig> {
         taxonomy: setting(entries, 'taxonomy') ?? 'category',
         apiBaseUrl: apiBaseUrl(setting(entries, 'apiBaseUrl'))
     };
+}
+
+/** True when the settings alone hold a full pair. */
+function hasSettingsPair(entries: SettingEntries): boolean {
+    const config = configFrom(entries, null);
+    return Boolean(config.apiKey && config.webhookSecret);
+}
+
+/**
+ * Reads every setting in one bridge call. When the settings hold no pair,
+ * a second call reads the plain-text keys that the connection flow stored
+ * in KV.
+ */
+export async function readConfig(ctx: PluginContext): Promise<PluginConfig> {
+    const entries = await readSettings(ctx);
+    const plain = hasSettingsPair(entries)
+        ? null
+        : await readPlainCredentials(ctx);
+    return configFrom(entries, plain);
 }
 
 /** The category taxonomy. 1 call: it reads no key, so no KV read follows. */
