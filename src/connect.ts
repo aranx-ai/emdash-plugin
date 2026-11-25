@@ -3,7 +3,13 @@ import {
     type PluginContext,
     type PluginResponse
 } from 'emdash/plugin';
-import { CREDENTIALS_SETTING, encodeCredentials, readConfig } from './config';
+import {
+    CREDENTIALS_SETTING,
+    KEY_SETTINGS,
+    encodeCredentials,
+    readConfig,
+    type SettingEntries
+} from './config';
 import {
     deletePlainCredentials,
     readConnectState,
@@ -37,7 +43,7 @@ import { scheduleTask } from './tasks';
  * `apiBaseUrl` setting, which a site admin can edit.
  */
 
-export const PLUGIN_VERSION = '0.1.9';
+export const PLUGIN_VERSION = '0.2.0';
 export const ARANX_APPROVE_URL = 'https://app.aranx.com/auth/emdash/consent';
 export const ARANX_CONNECT_API = 'https://api.aranx.com/api/v1/auth/emdash';
 
@@ -501,7 +507,8 @@ export function isConnectInFlight(
     state: ConnectState | null,
     now = Date.now()
 ): boolean {
-    if (!state || state.status === 'failed') return false;
+    if (!state || state.status === 'failed' || state.status === 'disconnected')
+        return false;
     const age = now - Date.parse(state.at);
     return (
         Number.isFinite(age) &&
@@ -510,6 +517,34 @@ export function isConnectInFlight(
                 ? CONFIRMED_GRACE_MS
                 : IN_FLIGHT_MAX_AGE_MS)
     );
+}
+
+/**
+ * "Disconnect" on the admin page. Deletes the keys from the settings and
+ * KV, so the plugin stops importing and the webhook answers 401. The pinned
+ * Aranx website, the feed position, and the article links stay, so a new
+ * connection to the same website resumes where this one stopped.
+ *
+ * Aranx has no call that lets the plugin revoke its key, so Aranx keeps the
+ * connection until the owner removes it on the Publishing page. Up to 5
+ * calls: it deletes only the settings that `settings` holds.
+ */
+export async function disconnect(
+    ctx: PluginContext,
+    settings: SettingEntries,
+    hasPlainCredentials: boolean
+): Promise<void> {
+    for (const key of KEY_SETTINGS)
+        if (settings.has(key)) await ctx.settings.delete(key); // 1 to 3
+    if (hasPlainCredentials) await deletePlainCredentials(ctx); // 4
+    await writeConnectState(ctx, {
+        status: 'disconnected',
+        state: null,
+        verifier: null,
+        confirmationId: null,
+        storage: null,
+        error: null
+    }); // 5
 }
 
 /** Removes plain-text keys that the encrypted settings replaced. */

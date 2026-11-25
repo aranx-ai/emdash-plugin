@@ -15,6 +15,21 @@ export interface ReportedState {
     publishError: string | null;
 }
 
+/**
+ * The last sync step for an article, for the activity list on the admin
+ * page. `in`: Aranx changed the entry. `out`: the plugin reported the entry
+ * state to Aranx. The record write that a step makes anyway carries it, so
+ * the list costs no extra call.
+ */
+export interface Activity {
+    direction: 'in' | 'out';
+    kind: 'imported' | 'updated' | 'reported' | 'refused';
+    /** The status sent to Aranx, for `reported` and `refused`. */
+    status: string | null;
+    /** The refusal reason, for `refused`. */
+    error: string | null;
+}
+
 export interface ArticleRecord {
     entryId: string;
     collection: string;
@@ -32,6 +47,11 @@ export interface ArticleRecord {
      * the content hash and leaves the entry as it is.
      */
     adopted: boolean;
+    /** The Aranx title at the last import. Older records lack it. */
+    title: string | null;
+    activity: Activity | null;
+    /** ISO time of `activity`. Indexed, so the admin page sorts by it. */
+    activityAt: string | null;
 }
 
 export interface FeedState {
@@ -43,6 +63,21 @@ export interface FeedState {
      * plugin and was never on the site.
      */
     importAfter: string | null;
+    /** The error of the last feed run, cleared by the next good run. */
+    error: FeedError | null;
+}
+
+export interface FeedError {
+    message: string;
+    /** HTTP status from Aranx, 0 without an answer. */
+    status: number;
+    at: string;
+}
+
+/** The last signed webhook from Aranx. */
+export interface WebhookEvent {
+    event: string;
+    at: string;
 }
 
 const FEED_KEY = 'feed';
@@ -50,6 +85,7 @@ const CATEGORY_TERMS_KEY = 'categoryTerms';
 const WEBSITE_ID_KEY = 'websiteId';
 const CONNECT_KEY = 'connect';
 const CREDENTIALS_KEY = 'credentials';
+const LAST_WEBHOOK_KEY = 'lastWebhook';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -57,6 +93,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function stringOrNull(value: unknown): string | null {
     return typeof value === 'string' ? value : null;
+}
+
+const ACTIVITY_KINDS = new Set(['imported', 'updated', 'reported', 'refused']);
+
+function toActivity(value: unknown): Activity | null {
+    if (
+        !isRecord(value) ||
+        (value.direction !== 'in' && value.direction !== 'out') ||
+        typeof value.kind !== 'string' ||
+        !ACTIVITY_KINDS.has(value.kind)
+    )
+        return null;
+    return {
+        direction: value.direction,
+        kind: value.kind as Activity['kind'],
+        status: stringOrNull(value.status),
+        error: stringOrNull(value.error)
+    };
 }
 
 function toReported(value: unknown): ReportedState | null {
@@ -91,8 +145,19 @@ export function toArticleRecord(value: unknown): ArticleRecord | null {
             : null,
         reported: toReported(value.reported),
         contentHash: stringOrNull(value.contentHash),
-        adopted: value.adopted === true
+        adopted: value.adopted === true,
+        title: stringOrNull(value.title),
+        activity: toActivity(value.activity),
+        activityAt: stringOrNull(value.activityAt)
     };
+}
+
+/** The record with its new activity, stamped now. */
+export function withActivity(
+    record: ArticleRecord,
+    activity: Activity
+): ArticleRecord {
+    return { ...record, activity, activityAt: new Date().toISOString() };
 }
 
 export function articles(ctx: PluginContext) {
@@ -131,17 +196,54 @@ export function articles(ctx: PluginContext) {
         },
         count(): Promise<number> {
             return collection.count();
+        },
+        /** The records with the newest activity first. 1 call. */
+        async recent(
+            limit: number,
+            cursor?: string
+        ): Promise<{
+            items: Array<{ articleId: string; record: ArticleRecord }>;
+            cursor: string | null;
+        }> {
+            const page = await collection.query({
+                orderBy: { activityAt: 'desc' },
+                limit,
+                ...(cursor ? { cursor } : {})
+            });
+            return {
+                items: page.items.flatMap((item) => {
+                    const record = toArticleRecord(item.data);
+                    return record?.activity && record.activityAt
+                        ? [{ articleId: item.id, record }]
+                        : [];
+                }),
+                cursor: page.hasMore ? (page.cursor ?? null) : null
+            };
         }
     };
 }
 
-export async function readFeedState(ctx: PluginContext): Promise<FeedState> {
-    const value = await ctx.kv.get<unknown>(FEED_KEY);
+function toFeedError(value: unknown): FeedError | null {
+    if (!isRecord(value) || typeof value.message !== 'string') return null;
     return {
-        cursor: isRecord(value) ? stringOrNull(value.cursor) : null,
-        lastRunAt: isRecord(value) ? stringOrNull(value.lastRunAt) : null,
-        importAfter: isRecord(value) ? stringOrNull(value.importAfter) : null
+        message: value.message,
+        status: typeof value.status === 'number' ? value.status : 0,
+        at: stringOrNull(value.at) ?? ''
     };
+}
+
+export function toFeedState(value: unknown): FeedState {
+    const record = isRecord(value) ? value : {};
+    return {
+        cursor: stringOrNull(record.cursor),
+        lastRunAt: stringOrNull(record.lastRunAt),
+        importAfter: stringOrNull(record.importAfter),
+        error: toFeedError(record.error)
+    };
+}
+
+export async function readFeedState(ctx: PluginContext): Promise<FeedState> {
+    return toFeedState(await ctx.kv.get<unknown>(FEED_KEY));
 }
 
 export function writeFeedState(
@@ -195,9 +297,10 @@ export function writeWebsiteId(
  *   them yet. Aranx still accepts the old key and signs with the old secret.
  * - `connected`: Aranx confirmed the keys.
  * - `failed`: the last attempt failed. `error` says what to do next.
+ * - `disconnected`: the admin clicked "Disconnect". The keys are deleted.
  */
 export interface ConnectState {
-    status: 'started' | 'pending' | 'connected' | 'failed';
+    status: 'started' | 'pending' | 'connected' | 'failed' | 'disconnected';
     /** ISO time of the last change. */
     at: string;
     state: string | null;
@@ -209,21 +312,21 @@ export interface ConnectState {
     error: string | null;
 }
 
-export async function readConnectState(
-    ctx: PluginContext
-): Promise<ConnectState | null> {
-    const value = await ctx.kv.get<unknown>(CONNECT_KEY);
+const CONNECT_STATUSES = new Set([
+    'started',
+    'pending',
+    'connected',
+    'failed',
+    'disconnected'
+]);
+
+export function toConnectState(value: unknown): ConnectState | null {
     if (!isRecord(value)) return null;
     const status = value.status;
-    if (
-        status !== 'started' &&
-        status !== 'pending' &&
-        status !== 'connected' &&
-        status !== 'failed'
-    )
+    if (typeof status !== 'string' || !CONNECT_STATUSES.has(status))
         return null;
     return {
-        status,
+        status: status as ConnectState['status'],
         at: stringOrNull(value.at) ?? '',
         state: stringOrNull(value.state),
         verifier: stringOrNull(value.verifier),
@@ -234,6 +337,12 @@ export async function readConnectState(
                 : null,
         error: stringOrNull(value.error)
     };
+}
+
+export async function readConnectState(
+    ctx: PluginContext
+): Promise<ConnectState | null> {
+    return toConnectState(await ctx.kv.get<unknown>(CONNECT_KEY));
 }
 
 export function writeConnectState(
@@ -252,7 +361,10 @@ export interface StoredCredentials {
 export async function readPlainCredentials(
     ctx: PluginContext
 ): Promise<StoredCredentials | null> {
-    const value = await ctx.kv.get<unknown>(CREDENTIALS_KEY);
+    return toPlainCredentials(await ctx.kv.get<unknown>(CREDENTIALS_KEY));
+}
+
+export function toPlainCredentials(value: unknown): StoredCredentials | null {
     if (
         !isRecord(value) ||
         typeof value.apiKey !== 'string' ||
@@ -273,4 +385,46 @@ export function writePlainCredentials(
 
 export function deletePlainCredentials(ctx: PluginContext): Promise<boolean> {
     return ctx.kv.delete(CREDENTIALS_KEY);
+}
+
+export function toWebhookEvent(value: unknown): WebhookEvent | null {
+    return isRecord(value) &&
+        typeof value.event === 'string' &&
+        typeof value.at === 'string'
+        ? { event: value.event, at: value.at }
+        : null;
+}
+
+export function writeLastWebhook(
+    ctx: PluginContext,
+    event: string
+): Promise<void> {
+    return ctx.kv.set(LAST_WEBHOOK_KEY, {
+        event,
+        at: new Date().toISOString()
+    });
+}
+
+/** Everything the admin page shows from KV, read in 1 call. */
+export interface PluginState {
+    feed: FeedState;
+    connect: ConnectState | null;
+    websiteId: string | null;
+    plainCredentials: StoredCredentials | null;
+    lastWebhook: WebhookEvent | null;
+}
+
+export async function readPluginState(
+    ctx: PluginContext
+): Promise<PluginState> {
+    const entries = new Map(
+        (await ctx.kv.list()).map((entry) => [entry.key, entry.value] as const)
+    );
+    return {
+        feed: toFeedState(entries.get(FEED_KEY)),
+        connect: toConnectState(entries.get(CONNECT_KEY)),
+        websiteId: stringOrNull(entries.get(WEBSITE_ID_KEY)),
+        plainCredentials: toPlainCredentials(entries.get(CREDENTIALS_KEY)),
+        lastWebhook: toWebhookEvent(entries.get(LAST_WEBHOOK_KEY))
+    };
 }

@@ -8,6 +8,7 @@ import {
     type AranxCategory,
     type AranxImage,
     type FeedItem,
+    type FeedPage,
     type ArticleReport,
     type ArticleStatus
 } from './aranx-api';
@@ -22,6 +23,7 @@ import {
     readCategoryTerms,
     readFeedState,
     writeCategoryTerms,
+    withActivity,
     writeFeedState,
     type ArticleRecord,
     type ReportedState
@@ -279,6 +281,7 @@ export async function runArticleTask(
             aranxUpdatedAt: article.updatedAt,
             contentHash,
             categoryIds,
+            title: article.title,
             ...(record.adopted && {
                 featuredUrl: featured?.url ?? null,
                 adopted: false
@@ -333,17 +336,31 @@ export async function runArticleTask(
         entryId = (await writer.create(collection, data)).id; // 7
     }
 
-    await store.put(articleId, {
-        entryId,
-        collection,
-        aranxUpdatedAt: article.updatedAt,
-        categoryIds,
-        featuredUrl: featured?.url ?? null,
-        featuredImage: featured ? featuredImage : null,
-        reported: record?.reported ?? null,
-        contentHash,
-        adopted: false
-    }); // 8
+    await store.put(
+        articleId,
+        withActivity(
+            {
+                entryId,
+                collection,
+                aranxUpdatedAt: article.updatedAt,
+                categoryIds,
+                featuredUrl: featured?.url ?? null,
+                featuredImage: featured ? featuredImage : null,
+                reported: record?.reported ?? null,
+                contentHash,
+                adopted: false,
+                title: article.title,
+                activity: null,
+                activityAt: null
+            },
+            {
+                direction: 'in',
+                kind: record ? 'updated' : 'imported',
+                status: null,
+                error: null
+            }
+        )
+    ); // 8
 
     const categoriesChanged = !sameIds(categoryIds, record?.categoryIds ?? []);
     await scheduleTask(
@@ -655,7 +672,24 @@ async function reportEntry(
         if (error instanceof AranxApiError && error.status === 404) return;
         throw error;
     }
-    if (record) await store.put(articleId, { ...record, reported: state }); // 5
+    if (record)
+        await store.put(
+            articleId,
+            withActivity(
+                { ...record, reported: state },
+                {
+                    direction: 'out',
+                    kind: refused ? 'refused' : 'reported',
+                    status: state.status,
+                    error: refused ? state.publishError : null
+                }
+            )
+        ); // 5
+}
+
+/** Aranx refused the API key: revoked, or replaced by another connection. */
+export function isAuthError(status: number): boolean {
+    return status === 401 || status === 403;
 }
 
 export interface FeedResult {
@@ -678,12 +712,29 @@ export async function runFeedTask(ctx: PluginContext): Promise<FeedResult> {
     const config = await readConfig(ctx); // 1
     if (!config.apiKey) return { scheduled: 0, hasMore: false };
     const state = await readFeedState(ctx); // 2
-    const page = await getFeedPage(
-        ctx,
-        apiConfig(config),
-        state.cursor,
-        FEED_PAGE_SIZE
-    ); // 3
+    let page: FeedPage;
+    try {
+        page = await getFeedPage(
+            ctx,
+            apiConfig(config),
+            state.cursor,
+            FEED_PAGE_SIZE
+        ); // 3
+    } catch (error) {
+        // The admin page shows the error. Aranx refuses a revoked key the
+        // same way on every retry, so that one ends the run.
+        const status = error instanceof AranxApiError ? error.status : 0;
+        await writeFeedState(ctx, {
+            ...state,
+            error: {
+                message: error instanceof Error ? error.message : String(error),
+                status,
+                at: new Date().toISOString()
+            }
+        }); // 4
+        if (isAuthError(status)) return { scheduled: 0, hasMore: false };
+        throw error;
+    }
     const stored = await articles(ctx).getMany(
         page.items.map((item) => item.id)
     ); // 4
@@ -709,7 +760,8 @@ export async function runFeedTask(ctx: PluginContext): Promise<FeedResult> {
     await writeFeedState(ctx, {
         ...state,
         cursor: page.nextCursor ?? state.cursor,
-        lastRunAt: new Date().toISOString()
+        lastRunAt: new Date().toISOString(),
+        error: null
     }); // 8
     // Without a new position, the next request would repeat this page.
     const hasMore = page.hasMore && Boolean(page.nextCursor);
